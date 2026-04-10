@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "A small floating circle that triggers a keystroke on hover"
 requires-python = ">=3.12"
 dependencies = [
+    "numpy>=2.4.4",
     "pillow>=10",
     "pynput>=1.8",
 ]

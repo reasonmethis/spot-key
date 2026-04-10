@@ -9,7 +9,8 @@ import tkinter as tk
 from dataclasses import dataclass, field
 from typing import Any
 
-from PIL import Image, ImageDraw, ImageFont, ImageTk
+import numpy as np
+from PIL import Image, ImageDraw, ImageTk
 from pynput.keyboard import Controller, Key
 
 # Enable per-monitor DPI awareness so Windows doesn't bitmap-scale us.
@@ -40,7 +41,7 @@ class Config:
     ))
     diameter: int = 160
     outline_color: str = "#374151"
-    transparent_color: str = "#010101"
+    transparent_color: str = "#FEFEFE"
     close_zone_size: int = 28  # px, side length of the close button zone
     close_zone_color: str = "#6B7280"
     close_zone_warn_color: str = "#EF4444"
@@ -140,10 +141,24 @@ class SpotKey:
         # Downsample with LANCZOS for smooth edges
         img = img.resize((d, d), Image.LANCZOS)
 
-        # Composite onto a background matching the transparent color
-        bg = Image.new("RGBA", (d, d), self.cfg.transparent_color)
-        bg.paste(img, (0, 0), img)
-        final = bg.convert("RGB")
+        # Build the final RGB image for tkinter's transparent-color trick.
+        # Tkinter can only do binary transparency (exact color match = invisible),
+        # so we must flatten RGBA → RGB carefully to avoid edge fringes.
+        tc = tuple(int(self.cfg.transparent_color[i:i+2], 16) for i in (1, 3, 5))
+        arr = np.array(img)  # (H, W, 4) uint8 RGBA
+        alpha = arr[:, :, 3].astype(np.float32) / 255.0
+        rgb = arr[:, :, :3].astype(np.float32)
+
+        # Blend semi-transparent edge pixels against white (near-white
+        # transparent color), so fringes are invisible on light backgrounds.
+        blended = rgb * alpha[:, :, None] + 255.0 * (1.0 - alpha[:, :, None])
+
+        # Alpha below threshold → fully transparent (use transparent color).
+        # This hard cutoff eliminates the very faint fringe pixels that would
+        # show as white ghosts on dark backgrounds.
+        mask_transparent = alpha < 0.15
+        out = np.where(mask_transparent[:, :, None], np.array(tc, dtype=np.float32), blended)
+        final = Image.fromarray(out.clip(0, 255).astype(np.uint8), "RGB")
 
         self._photo = ImageTk.PhotoImage(final)
         if self._canvas_image is None:
