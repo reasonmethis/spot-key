@@ -118,36 +118,31 @@ class TestShortcutTrigger:
 
 
 class TestVisualFeedback:
-    def test_hover_sets_active_index(self, app, cfg):
+    def test_hover_does_not_highlight_immediately(self, app, cfg):
         mid = cfg.diameter // 2
         app._on_motion(_event(x=mid, y=5))
+        assert app._active_index is None
+        assert app._pending_index == 0
+
+    def test_highlight_appears_on_fire(self, app, cfg):
+        mid = cfg.diameter // 2
+        app._on_motion(_event(x=mid, y=5))
+        app._fire_shortcut(0)
         assert app._active_index == 0
 
-    def test_leave_clears_active_index(self, app):
+    def test_leave_clears_both_indices(self, app):
         mid = app.cfg.diameter // 2
         app._on_motion(_event(x=mid, y=5))
         app._on_leave(_event())
         assert app._active_index is None
+        assert app._pending_index is None
 
-    def test_moving_slices_updates_active_index(self, app, cfg):
+    def test_render_pie_highlights_on_fire(self, app, cfg):
         mid = cfg.diameter // 2
         app._on_motion(_event(x=mid, y=5))
-        assert app._active_index == 0
-        app._on_motion(_event(x=mid + 20, y=mid + 15))
-        assert app._active_index == 1
-
-    def test_render_pie_called_on_hover(self, app, cfg):
-        mid = cfg.diameter // 2
         with patch.object(app, "_render_pie") as mock_render:
-            app._on_motion(_event(x=mid, y=5))
+            app._fire_shortcut(0)
             mock_render.assert_called_once_with(highlight=0)
-
-    def test_render_pie_called_on_leave(self, app):
-        mid = app.cfg.diameter // 2
-        app._on_motion(_event(x=mid, y=5))
-        with patch.object(app, "_render_pie") as mock_render:
-            app._on_leave(_event())
-            mock_render.assert_called_once_with()
 
 
 class TestCloseZone:

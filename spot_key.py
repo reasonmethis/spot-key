@@ -124,9 +124,10 @@ class SpotKey:
     def __init__(self, cfg: Config = Config(), keyboard: Controller | None = None) -> None:
         self.cfg = cfg
         self.keyboard = keyboard or Controller()
-        self._active_index: int | None = None
+        self._active_index: int | None = None   # currently highlighted (fired)
+        self._pending_index: int | None = None  # waiting for hover timer
         self._drag_origin: tuple[int, int] = (0, 0)
-        self._shortcut_timer: str | None = None  # pending shortcut fire
+        self._shortcut_timer: str | None = None
 
         # Close-zone state
         self._in_close_zone = False
@@ -287,15 +288,17 @@ class SpotKey:
             self._leave_close_zone()
 
         idx = self._index_at(event.x, event.y)
-        if idx == self._active_index:
+        if idx == self._active_index or idx == self._pending_index:
             return
 
-        # Cancel any pending shortcut from the previous slice
         self._cancel_shortcut_timer()
 
-        self._active_index = idx
-        self._render_pie(highlight=idx)
+        # Reset highlight from previous slice
+        if self._active_index is not None:
+            self._active_index = None
+            self._render_pie()
 
+        self._pending_index = idx
         if idx is not None:
             self._shortcut_timer = self.root.after(
                 self.cfg.shortcut_hover_ms,
@@ -304,11 +307,15 @@ class SpotKey:
 
     def _fire_shortcut(self, idx: int) -> None:
         self._shortcut_timer = None
-        if self._active_index == idx:
+        if self._pending_index == idx:
+            self._active_index = idx
+            self._pending_index = None
+            self._render_pie(highlight=idx)
             self._send_keys(self.cfg.shortcuts[idx].keys)
 
     def _on_leave(self, _event: tk.Event[Any]) -> None:
         self._cancel_shortcut_timer()
+        self._pending_index = None
         if self._in_close_zone:
             self._leave_close_zone()
         if self._active_index is not None:
