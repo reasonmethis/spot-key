@@ -24,7 +24,7 @@ Each slice of the pie represents a different keyboard shortcut. Hover over a sli
 ## Getting started
 
 ```
-git clone https://github.com/mrseanryan/spot-key.git
+git clone https://github.com/reasonmethis/spot-key.git
 cd spot-key
 uv sync
 uv run python spot_key.py
