@@ -1,103 +1,117 @@
-"""
-Spot Key — a small floating circle that triggers a keystroke on hover.
-"""
+"""Spot Key — a small floating circle that triggers a keystroke on hover."""
+
+from __future__ import annotations
 
 import tkinter as tk
+from dataclasses import dataclass
+from typing import Any
+
 from pynput.keyboard import Controller, Key
 
-# --- Configuration ---
-SHORTCUT = (Key.ctrl_l, "q")  # Ctrl+Q
-CIRCLE_DIAMETER = 80  # pixels (~quarter-sized)
-CIRCLE_COLOR = "#4A90D9"
-CIRCLE_HOVER_COLOR = "#E84040"
-TRANSPARENT_COLOR = "#010101"  # color used for transparency mask
+
+@dataclass(frozen=True)
+class Config:
+    """All tunables in one place for future UI binding."""
+
+    modifier: Key = Key.ctrl_l
+    key: str = "q"
+    diameter: int = 80
+    color: str = "#4A90D9"
+    hover_color: str = "#E84040"
+    outline_color: str = "#2C5F9E"
+    transparent_color: str = "#010101"
 
 
 class SpotKey:
-    def __init__(self):
-        self.keyboard = Controller()
+    """Frameless, always-on-top circle that sends a keystroke when the mouse enters."""
+
+    def __init__(self, cfg: Config = Config(), keyboard: Controller | None = None) -> None:
+        self.cfg = cfg
+        self.keyboard = keyboard or Controller()
         self.triggered = False
+        self._drag_origin: tuple[int, int] = (0, 0)
 
-        # --- Window setup ---
-        self.root = tk.Tk()
-        self.root.title("Spot Key")
-        self.root.overrideredirect(True)  # no title bar
-        self.root.attributes("-topmost", True)  # always on top
-        self.root.attributes("-transparentcolor", TRANSPARENT_COLOR)
-        self.root.geometry(f"{CIRCLE_DIAMETER}x{CIRCLE_DIAMETER}")
-        self.root.configure(bg=TRANSPARENT_COLOR)
+        self.root = self._build_window()
+        self.canvas, self.circle = self._build_circle()
+        self._bind_events()
 
-        # Center on screen initially
-        sw = self.root.winfo_screenwidth()
-        sh = self.root.winfo_screenheight()
-        x = sw - CIRCLE_DIAMETER - 40
-        y = sh // 2 - CIRCLE_DIAMETER // 2
-        self.root.geometry(f"+{x}+{y}")
+    # -- Construction --------------------------------------------------------
 
-        # --- Canvas with circle ---
-        self.canvas = tk.Canvas(
-            self.root,
-            width=CIRCLE_DIAMETER,
-            height=CIRCLE_DIAMETER,
-            bg=TRANSPARENT_COLOR,
-            highlightthickness=0,
+    def _build_window(self) -> tk.Tk:
+        root = tk.Tk()
+        root.title("Spot Key")
+        root.overrideredirect(True)
+        root.attributes("-topmost", True)
+        root.attributes("-transparentcolor", self.cfg.transparent_color)
+        root.configure(bg=self.cfg.transparent_color)
+
+        d = self.cfg.diameter
+        root.geometry(f"{d}x{d}")
+        x = root.winfo_screenwidth() - d - 40
+        y = root.winfo_screenheight() // 2 - d // 2
+        root.geometry(f"+{x}+{y}")
+        return root
+
+    def _build_circle(self) -> tuple[tk.Canvas, int]:
+        d = self.cfg.diameter
+        canvas = tk.Canvas(
+            self.root, width=d, height=d,
+            bg=self.cfg.transparent_color, highlightthickness=0,
         )
-        self.canvas.pack()
+        canvas.pack()
 
         pad = 2
-        self.circle = self.canvas.create_oval(
-            pad, pad,
-            CIRCLE_DIAMETER - pad, CIRCLE_DIAMETER - pad,
-            fill=CIRCLE_COLOR,
-            outline="#2C5F9E",
-            width=2,
+        circle = canvas.create_oval(
+            pad, pad, d - pad, d - pad,
+            fill=self.cfg.color, outline=self.cfg.outline_color, width=2,
         )
+        return canvas, circle
 
-        # --- Event bindings ---
+    def _bind_events(self) -> None:
         self.canvas.bind("<Enter>", self._on_enter)
         self.canvas.bind("<Leave>", self._on_leave)
-
-        # Right-click drag to reposition
-        self._drag_data = {"x": 0, "y": 0}
         self.canvas.bind("<Button-3>", self._on_drag_start)
         self.canvas.bind("<B3-Motion>", self._on_drag_motion)
-
-        # Double-right-click to quit
         self.canvas.bind("<Double-Button-3>", self._on_quit)
 
-    def _on_enter(self, _event):
+    # -- Hover / shortcut ----------------------------------------------------
+
+    def _on_enter(self, _event: tk.Event[Any]) -> None:
         if self.triggered:
             return
         self.triggered = True
-        self.canvas.itemconfig(self.circle, fill=CIRCLE_HOVER_COLOR)
-        modifier, key = SHORTCUT
-        self.keyboard.press(modifier)
-        self.keyboard.press(key)
-        self.keyboard.release(key)
-        self.keyboard.release(modifier)
+        self.canvas.itemconfig(self.circle, fill=self.cfg.hover_color)
+        self.keyboard.press(self.cfg.modifier)
+        self.keyboard.press(self.cfg.key)
+        self.keyboard.release(self.cfg.key)
+        self.keyboard.release(self.cfg.modifier)
 
-    def _on_leave(self, _event):
+    def _on_leave(self, _event: tk.Event[Any]) -> None:
         self.triggered = False
-        self.canvas.itemconfig(self.circle, fill=CIRCLE_COLOR)
+        self.canvas.itemconfig(self.circle, fill=self.cfg.color)
 
-    # --- Dragging (right-click) ---
-    def _on_drag_start(self, event):
-        self._drag_data["x"] = event.x_root - self.root.winfo_x()
-        self._drag_data["y"] = event.y_root - self.root.winfo_y()
+    # -- Drag ----------------------------------------------------------------
 
-    def _on_drag_motion(self, event):
-        x = event.x_root - self._drag_data["x"]
-        y = event.y_root - self._drag_data["y"]
-        self.root.geometry(f"+{x}+{y}")
+    def _on_drag_start(self, event: tk.Event[Any]) -> None:
+        self._drag_origin = (
+            event.x_root - self.root.winfo_x(),
+            event.y_root - self.root.winfo_y(),
+        )
 
-    def _on_quit(self, _event):
+    def _on_drag_motion(self, event: tk.Event[Any]) -> None:
+        dx, dy = self._drag_origin
+        self.root.geometry(f"+{event.x_root - dx}+{event.y_root - dy}")
+
+    def _on_quit(self, _event: tk.Event[Any]) -> None:
         self.root.destroy()
 
-    def run(self):
+    # -- Run -----------------------------------------------------------------
+
+    def run(self) -> None:
         self.root.mainloop()
 
 
-def main():
+def main() -> None:
     SpotKey().run()
 
 
