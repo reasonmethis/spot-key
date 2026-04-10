@@ -58,7 +58,7 @@ class Config:
     close_zone_size: int = 28
     close_zone_color: str = "#6B7280"
     close_zone_warn_color: str = "#EF4444"
-    shortcut_hover_ms: int = 250  # ms hover before a shortcut fires
+    shortcut_hover_ms: int = 330  # ms hover before a shortcut fires
     close_auto_quit_ms: int = 5000
 
 
