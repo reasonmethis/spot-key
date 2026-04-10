@@ -58,7 +58,7 @@ class Config:
     close_zone_size: int = 28
     close_zone_color: str = "#6B7280"
     close_zone_warn_color: str = "#EF4444"
-    close_hover_delay_ms: int = 500
+    shortcut_hover_ms: int = 250  # ms hover before a shortcut fires
     close_auto_quit_ms: int = 5000
 
 
@@ -126,11 +126,11 @@ class SpotKey:
         self.keyboard = keyboard or Controller()
         self._active_index: int | None = None
         self._drag_origin: tuple[int, int] = (0, 0)
+        self._shortcut_timer: str | None = None  # pending shortcut fire
 
         # Close-zone state
         self._in_close_zone = False
         self._close_zone_armed = False
-        self._close_hover_timer: str | None = None
         self._close_auto_quit_timer: str | None = None
 
         self.root = self._build_window()
@@ -251,15 +251,10 @@ class SpotKey:
         if self._in_close_zone:
             return
         self._in_close_zone = True
+        self._close_zone_armed = True
+        self._cancel_shortcut_timer()
         if self._active_index is not None:
             self._active_index = None
-        self._close_hover_timer = self.root.after(
-            self.cfg.close_hover_delay_ms, self._arm_close_zone,
-        )
-
-    def _arm_close_zone(self) -> None:
-        self._close_zone_armed = True
-        self._close_hover_timer = None
         self._render_pie()
         self._close_auto_quit_timer = self.root.after(
             self.cfg.close_auto_quit_ms, self._quit,
@@ -268,9 +263,6 @@ class SpotKey:
     def _leave_close_zone(self) -> None:
         self._in_close_zone = False
         self._close_zone_armed = False
-        if self._close_hover_timer is not None:
-            self.root.after_cancel(self._close_hover_timer)
-            self._close_hover_timer = None
         if self._close_auto_quit_timer is not None:
             self.root.after_cancel(self._close_auto_quit_timer)
             self._close_auto_quit_timer = None
@@ -280,6 +272,11 @@ class SpotKey:
         self.root.destroy()
 
     # -- Hover / shortcut ----------------------------------------------------
+
+    def _cancel_shortcut_timer(self) -> None:
+        if self._shortcut_timer is not None:
+            self.root.after_cancel(self._shortcut_timer)
+            self._shortcut_timer = None
 
     def _on_motion(self, event: tk.Event[Any]) -> None:
         if self._is_in_close_zone(event.x, event.y):
@@ -293,13 +290,25 @@ class SpotKey:
         if idx == self._active_index:
             return
 
+        # Cancel any pending shortcut from the previous slice
+        self._cancel_shortcut_timer()
+
         self._active_index = idx
         self._render_pie(highlight=idx)
 
         if idx is not None:
+            self._shortcut_timer = self.root.after(
+                self.cfg.shortcut_hover_ms,
+                self._fire_shortcut, idx,
+            )
+
+    def _fire_shortcut(self, idx: int) -> None:
+        self._shortcut_timer = None
+        if self._active_index == idx:
             self._send_keys(self.cfg.shortcuts[idx].keys)
 
     def _on_leave(self, _event: tk.Event[Any]) -> None:
+        self._cancel_shortcut_timer()
         if self._in_close_zone:
             self._leave_close_zone()
         if self._active_index is not None:

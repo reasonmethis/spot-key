@@ -59,9 +59,15 @@ class TestIndexAt:
 
 
 class TestShortcutTrigger:
-    def test_hover_fires_correct_shortcut(self, app, cfg):
+    def test_hover_does_not_fire_immediately(self, app, cfg):
         mid = cfg.diameter // 2
-        app._on_motion(_event(x=mid, y=5))  # top center → slice 0
+        app._on_motion(_event(x=mid, y=5))
+        app.keyboard.press.assert_not_called()
+
+    def test_hover_fires_after_timer(self, app, cfg):
+        mid = cfg.diameter // 2
+        app._on_motion(_event(x=mid, y=5))
+        app._fire_shortcut(0)  # simulate timer
         sc = cfg.shortcuts[0]
         for k in sc.keys:
             app.keyboard.press.assert_any_call(k)
@@ -70,32 +76,42 @@ class TestShortcutTrigger:
     def test_no_retrigger_in_same_slice(self, app, cfg):
         mid = cfg.diameter // 2
         app._on_motion(_event(x=mid, y=5))
+        app._fire_shortcut(0)
         app.keyboard.reset_mock()
         app._on_motion(_event(x=mid, y=6))
         app.keyboard.press.assert_not_called()
 
-    def test_moving_to_different_slice_fires(self, app, cfg):
+    def test_moving_to_different_slice_cancels_and_starts_new(self, app, cfg):
         mid = cfg.diameter // 2
         app._on_motion(_event(x=mid, y=5))                # slice 0
-        app.keyboard.reset_mock()
-        app._on_motion(_event(x=mid + 20, y=mid + 15))    # slice 1
+        app._on_motion(_event(x=mid + 20, y=mid + 15))    # slice 1 — cancels slice 0 timer
+        app._fire_shortcut(1)  # simulate timer for slice 1
         sc = cfg.shortcuts[1]
         for k in sc.keys:
             app.keyboard.press.assert_any_call(k)
 
+    def test_leave_cancels_pending_shortcut(self, app, cfg):
+        mid = cfg.diameter // 2
+        app._on_motion(_event(x=mid, y=5))
+        app._on_leave(_event())
+        assert app._shortcut_timer is None
+
     def test_leave_and_reenter_retriggers(self, app, cfg):
         mid = cfg.diameter // 2
         app._on_motion(_event(x=mid, y=5))
+        app._fire_shortcut(0)
         app.keyboard.reset_mock()
         app._on_leave(_event())
         app._on_motion(_event(x=mid, y=5))
+        app._fire_shortcut(0)
         sc = cfg.shortcuts[0]
         for k in sc.keys:
             app.keyboard.press.assert_any_call(k)
 
     def test_key_press_and_release_order(self, app, cfg):
         mid = cfg.diameter // 2
-        app._on_motion(_event(x=mid, y=5))  # slice 0: Ctrl+Q
+        app._on_motion(_event(x=mid, y=5))
+        app._fire_shortcut(0)
         sc = cfg.shortcuts[0]
         assert app.keyboard.press.call_args_list == [call(k) for k in sc.keys]
         assert app.keyboard.release.call_args_list == [call(k) for k in reversed(sc.keys)]
@@ -139,9 +155,9 @@ class TestCloseZone:
         app._on_motion(_event(x=5, y=5))
         assert app._in_close_zone is True
 
-    def test_hover_starts_unarmed(self, app):
+    def test_hover_arms_immediately(self, app):
         app._on_motion(_event(x=5, y=5))
-        assert app._close_zone_armed is False
+        assert app._close_zone_armed is True
 
     def test_leaving_close_zone_resets(self, app, cfg):
         mid = cfg.diameter // 2
@@ -155,23 +171,11 @@ class TestCloseZone:
         app._on_leave(_event())
         assert app._in_close_zone is False
 
-    def test_click_unarmed_does_not_quit(self, app):
-        app._on_motion(_event(x=5, y=5))
-        app._on_click(_event(x=5, y=5))
-        assert app.root.winfo_exists()
-
     def test_click_armed_quits(self, app):
-        app._on_motion(_event(x=5, y=5))
-        app._arm_close_zone()  # simulate timer firing
+        app._on_motion(_event(x=5, y=5))  # arms immediately
         app._on_click(_event(x=5, y=5))
-        # root.destroy() was called; any further tk call raises TclError
         with pytest.raises(tk.TclError):
             app.root.winfo_exists()
-
-    def test_arm_sets_flag(self, app):
-        app._on_motion(_event(x=5, y=5))
-        app._arm_close_zone()
-        assert app._close_zone_armed is True
 
     def test_close_zone_does_not_fire_shortcut(self, app):
         app._on_motion(_event(x=5, y=5))
