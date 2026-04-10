@@ -179,10 +179,6 @@ class TestCloseZone:
 
 
 class TestPieConstruction:
-    def test_canvas_has_image(self, app):
-        assert app._canvas_image is not None
-        assert app._photo is not None
-
     def test_single_shortcut_full_circle(self):
         one = Config(shortcuts=(
             Shortcut("Test", (Key.enter,), "#AAA", "#BBB"),

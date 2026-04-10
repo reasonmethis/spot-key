@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import ctypes
+import ctypes.wintypes as wt
 import math
+import struct
 import sys
 import tkinter as tk
 from dataclasses import dataclass, field
@@ -18,6 +20,18 @@ if sys.platform == "win32":
     ctypes.windll.shcore.SetProcessDpiAwareness(2)  # type: ignore[union-attr]
 
 SUPERSAMPLE = 4  # draw at Nx resolution, downsample for smooth edges
+
+# Win32 constants for layered windows (true per-pixel alpha).
+GWL_EXSTYLE = -20
+WS_EX_LAYERED = 0x00080000
+AC_SRC_OVER = 0
+AC_SRC_ALPHA = 1
+ULW_ALPHA = 2
+BI_RGB = 0
+DIB_RGB_COLORS = 0
+
+user32 = ctypes.windll.user32
+gdi32 = ctypes.windll.gdi32
 
 
 @dataclass(frozen=True)
@@ -41,12 +55,67 @@ class Config:
     ))
     diameter: int = 160
     outline_color: str = "#374151"
-    transparent_color: str = "#FEFEFE"
-    close_zone_size: int = 28  # px, side length of the close button zone
+    close_zone_size: int = 28
     close_zone_color: str = "#6B7280"
     close_zone_warn_color: str = "#EF4444"
-    close_hover_delay_ms: int = 500  # ms before zone turns red
-    close_auto_quit_ms: int = 5000  # ms after turning red to auto-quit
+    close_hover_delay_ms: int = 500
+    close_auto_quit_ms: int = 5000
+
+
+def _update_layered_window(hwnd: int, img: Image.Image) -> None:
+    """Push an RGBA Pillow image onto a layered window with per-pixel alpha."""
+    w, h = img.size
+
+    # Convert to premultiplied-alpha BGRA (what Windows expects).
+    arr = np.array(img)  # (H, W, 4) RGBA uint8
+    alpha = arr[:, :, 3:4].astype(np.float32) / 255.0
+    rgb = arr[:, :, :3].astype(np.float32)
+    premul = (rgb * alpha).clip(0, 255).astype(np.uint8)
+    bgra = np.empty((h, w, 4), dtype=np.uint8)
+    bgra[:, :, 0] = premul[:, :, 2]  # B
+    bgra[:, :, 1] = premul[:, :, 1]  # G
+    bgra[:, :, 2] = premul[:, :, 0]  # R
+    bgra[:, :, 3] = arr[:, :, 3]     # A
+    # Flip vertically — DIB is bottom-up.
+    bgra = bgra[::-1].copy()
+    raw = bgra.tobytes()
+
+    # BITMAPINFOHEADER (40 bytes)
+    bmi = struct.pack(
+        "IiiHHIIiiII",
+        40, w, h, 1, 32, BI_RGB, len(raw), 0, 0, 0, 0,
+    )
+
+    hdc_screen = user32.GetDC(0)
+    hdc_mem = gdi32.CreateCompatibleDC(hdc_screen)
+
+    ppv_bits = ctypes.c_void_p()
+    hbmp = gdi32.CreateDIBSection(
+        hdc_mem, bmi, DIB_RGB_COLORS, ctypes.byref(ppv_bits), None, 0,
+    )
+    gdi32.SelectObject(hdc_mem, hbmp)
+    ctypes.memmove(ppv_bits, raw, len(raw))
+
+    # BLENDFUNCTION packed as a DWORD: (BlendOp, BlendFlags, SourceConstantAlpha, AlphaFormat)
+    blend = struct.pack("BBBB", AC_SRC_OVER, 0, 255, AC_SRC_ALPHA)
+
+    pt_src = struct.pack("ii", 0, 0)
+    size = struct.pack("ii", w, h)
+
+    user32.UpdateLayeredWindow(
+        hwnd, hdc_screen,
+        None,                   # pptDst — keep current position
+        size,                   # psize
+        hdc_mem,                # hdcSrc
+        pt_src,                 # pptSrc
+        0,                      # crKey (unused)
+        blend,                  # pblend
+        ULW_ALPHA,              # dwFlags
+    )
+
+    gdi32.DeleteObject(hbmp)
+    gdi32.DeleteDC(hdc_mem)
+    user32.ReleaseDC(0, hdc_screen)
 
 
 class SpotKey:
@@ -78,21 +147,25 @@ class SpotKey:
         root.title("Spot Key")
         root.overrideredirect(True)
         root.attributes("-topmost", True)
-        root.attributes("-transparentcolor", self.cfg.transparent_color)
-        root.configure(bg=self.cfg.transparent_color)
 
         d = self.cfg.diameter
         root.geometry(f"{d}x{d}")
         x = root.winfo_screenwidth() - d - 40
         y = root.winfo_screenheight() // 2 - d // 2
         root.geometry(f"+{x}+{y}")
+
+        # Make it a layered window for true per-pixel alpha.
+        root.update_idletasks()
+        hwnd = root.winfo_id()
+        style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+        user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style | WS_EX_LAYERED)
+
         return root
 
     def _build_canvas(self) -> tk.Canvas:
         d = self.cfg.diameter
         canvas = tk.Canvas(
-            self.root, width=d, height=d,
-            bg=self.cfg.transparent_color, highlightthickness=0,
+            self.root, width=d, height=d, highlightthickness=0,
         )
         canvas.pack()
         return canvas
@@ -100,7 +173,7 @@ class SpotKey:
     # -- Pillow-based pie rendering ------------------------------------------
 
     def _render_pie(self, highlight: int | None = None) -> None:
-        """Render the pie chart with Pillow (supersampled for antialiasing)."""
+        """Render the pie chart as RGBA and push to the layered window."""
         d = self.cfg.diameter
         ss = SUPERSAMPLE
         hi = d * ss
@@ -138,33 +211,13 @@ class SpotKey:
             fill="#FFFFFF", width=2 * ss,
         )
 
-        # Downsample with LANCZOS for smooth edges
+        # Downsample with LANCZOS for smooth antialiased edges
         img = img.resize((d, d), Image.LANCZOS)
 
-        # Build the final RGB image for tkinter's transparent-color trick.
-        # Tkinter can only do binary transparency (exact color match = invisible),
-        # so we must flatten RGBA → RGB carefully to avoid edge fringes.
-        tc = tuple(int(self.cfg.transparent_color[i:i+2], 16) for i in (1, 3, 5))
-        arr = np.array(img)  # (H, W, 4) uint8 RGBA
-        alpha = arr[:, :, 3].astype(np.float32) / 255.0
-        rgb = arr[:, :, :3].astype(np.float32)
-
-        # Blend semi-transparent edge pixels against white (near-white
-        # transparent color), so fringes are invisible on light backgrounds.
-        blended = rgb * alpha[:, :, None] + 255.0 * (1.0 - alpha[:, :, None])
-
-        # Alpha below threshold → fully transparent (use transparent color).
-        # This hard cutoff eliminates the very faint fringe pixels that would
-        # show as white ghosts on dark backgrounds.
-        mask_transparent = alpha < 0.15
-        out = np.where(mask_transparent[:, :, None], np.array(tc, dtype=np.float32), blended)
-        final = Image.fromarray(out.clip(0, 255).astype(np.uint8), "RGB")
-
-        self._photo = ImageTk.PhotoImage(final)
-        if self._canvas_image is None:
-            self._canvas_image = self.canvas.create_image(0, 0, anchor=tk.NW, image=self._photo)
-        else:
-            self.canvas.itemconfig(self._canvas_image, image=self._photo)
+        # Push the RGBA image to the layered window — true per-pixel alpha,
+        # no fringe on any background.
+        hwnd = self.root.winfo_id()
+        _update_layered_window(hwnd, img)
 
     def _bind_events(self) -> None:
         self.canvas.bind("<Motion>", self._on_motion)
@@ -198,10 +251,8 @@ class SpotKey:
         if self._in_close_zone:
             return
         self._in_close_zone = True
-        # Reset pie highlight
         if self._active_index is not None:
             self._active_index = None
-        # Start 0.5s timer to arm
         self._close_hover_timer = self.root.after(
             self.cfg.close_hover_delay_ms, self._arm_close_zone,
         )
@@ -210,7 +261,6 @@ class SpotKey:
         self._close_zone_armed = True
         self._close_hover_timer = None
         self._render_pie()
-        # Start auto-quit timer
         self._close_auto_quit_timer = self.root.after(
             self.cfg.close_auto_quit_ms, self._quit,
         )
