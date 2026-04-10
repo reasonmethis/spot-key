@@ -9,7 +9,7 @@ import tkinter as tk
 from dataclasses import dataclass, field
 from typing import Any
 
-from PIL import Image, ImageDraw, ImageTk
+from PIL import Image, ImageDraw, ImageFont, ImageTk
 from pynput.keyboard import Controller, Key
 
 # Enable per-monitor DPI awareness so Windows doesn't bitmap-scale us.
@@ -38,9 +38,14 @@ class Config:
         Shortcut("Ctrl+C", (Key.ctrl_l, "c"), "#10B981", "#059669"),
         Shortcut("Enter",  (Key.enter,),      "#F59E0B", "#D97706"),
     ))
-    diameter: int = 80
+    diameter: int = 160
     outline_color: str = "#374151"
     transparent_color: str = "#010101"
+    close_zone_size: int = 28  # px, side length of the close button zone
+    close_zone_color: str = "#6B7280"
+    close_zone_warn_color: str = "#EF4444"
+    close_hover_delay_ms: int = 500  # ms before zone turns red
+    close_auto_quit_ms: int = 5000  # ms after turning red to auto-quit
 
 
 class SpotKey:
@@ -51,6 +56,12 @@ class SpotKey:
         self.keyboard = keyboard or Controller()
         self._active_index: int | None = None
         self._drag_origin: tuple[int, int] = (0, 0)
+
+        # Close-zone state
+        self._in_close_zone = False
+        self._close_zone_armed = False
+        self._close_hover_timer: str | None = None
+        self._close_auto_quit_timer: str | None = None
 
         self.root = self._build_window()
         self.canvas = self._build_canvas()
@@ -90,26 +101,46 @@ class SpotKey:
     def _render_pie(self, highlight: int | None = None) -> None:
         """Render the pie chart with Pillow (supersampled for antialiasing)."""
         d = self.cfg.diameter
-        hi = d * SUPERSAMPLE
+        ss = SUPERSAMPLE
+        hi = d * ss
         img = Image.new("RGBA", (hi, hi), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
 
         n = len(self.cfg.shortcuts)
         extent = 360 / n
-        pad = 2 * SUPERSAMPLE
+        pad = 2 * ss
         bbox = (pad, pad, hi - pad, hi - pad)
 
         for i, sc in enumerate(self.cfg.shortcuts):
             start = 90 - i * extent
             color = sc.hover_color if i == highlight else sc.color
             draw.pieslice(bbox, start=-start, end=-(start - extent),
-                          fill=color, outline=self.cfg.outline_color, width=2 * SUPERSAMPLE)
+                          fill=color, outline=self.cfg.outline_color, width=2 * ss)
+
+        # Draw close zone in top-left corner
+        cz = self.cfg.close_zone_size * ss
+        cz_color = self.cfg.close_zone_warn_color if self._close_zone_armed else self.cfg.close_zone_color
+        margin = 1 * ss
+        draw.rounded_rectangle(
+            (margin, margin, cz, cz),
+            radius=4 * ss, fill=cz_color, outline=self.cfg.outline_color, width=1 * ss,
+        )
+        # Draw "×" in the close zone
+        x_margin = 6 * ss
+        x_size = cz - x_margin * 2 + margin
+        draw.line(
+            (x_margin, x_margin, x_margin + x_size, x_margin + x_size),
+            fill="#FFFFFF", width=2 * ss,
+        )
+        draw.line(
+            (x_margin + x_size, x_margin, x_margin, x_margin + x_size),
+            fill="#FFFFFF", width=2 * ss,
+        )
 
         # Downsample with LANCZOS for smooth edges
         img = img.resize((d, d), Image.LANCZOS)
 
-        # Composite onto a background matching the transparent color so tkinter
-        # can punch through the non-pie area.
+        # Composite onto a background matching the transparent color
         bg = Image.new("RGBA", (d, d), self.cfg.transparent_color)
         bg.paste(img, (0, 0), img)
         final = bg.convert("RGB")
@@ -123,11 +154,15 @@ class SpotKey:
     def _bind_events(self) -> None:
         self.canvas.bind("<Motion>", self._on_motion)
         self.canvas.bind("<Leave>", self._on_leave)
+        self.canvas.bind("<Button-1>", self._on_click)
         self.canvas.bind("<Button-3>", self._on_drag_start)
         self.canvas.bind("<B3-Motion>", self._on_drag_motion)
-        self.canvas.bind("<Double-Button-3>", self._on_quit)
 
     # -- Hit detection -------------------------------------------------------
+
+    def _is_in_close_zone(self, x: int, y: int) -> bool:
+        cz = self.cfg.close_zone_size
+        return x <= cz and y <= cz
 
     def _index_at(self, x: int, y: int) -> int | None:
         """Return the slice index under (x, y), or None if outside the circle."""
@@ -142,9 +177,53 @@ class SpotKey:
         extent = 360 / len(self.cfg.shortcuts)
         return int(clock // extent)
 
+    # -- Close zone ----------------------------------------------------------
+
+    def _enter_close_zone(self) -> None:
+        if self._in_close_zone:
+            return
+        self._in_close_zone = True
+        # Reset pie highlight
+        if self._active_index is not None:
+            self._active_index = None
+        # Start 0.5s timer to arm
+        self._close_hover_timer = self.root.after(
+            self.cfg.close_hover_delay_ms, self._arm_close_zone,
+        )
+
+    def _arm_close_zone(self) -> None:
+        self._close_zone_armed = True
+        self._close_hover_timer = None
+        self._render_pie()
+        # Start auto-quit timer
+        self._close_auto_quit_timer = self.root.after(
+            self.cfg.close_auto_quit_ms, self._quit,
+        )
+
+    def _leave_close_zone(self) -> None:
+        self._in_close_zone = False
+        self._close_zone_armed = False
+        if self._close_hover_timer is not None:
+            self.root.after_cancel(self._close_hover_timer)
+            self._close_hover_timer = None
+        if self._close_auto_quit_timer is not None:
+            self.root.after_cancel(self._close_auto_quit_timer)
+            self._close_auto_quit_timer = None
+        self._render_pie()
+
+    def _quit(self) -> None:
+        self.root.destroy()
+
     # -- Hover / shortcut ----------------------------------------------------
 
     def _on_motion(self, event: tk.Event[Any]) -> None:
+        if self._is_in_close_zone(event.x, event.y):
+            self._enter_close_zone()
+            return
+
+        if self._in_close_zone:
+            self._leave_close_zone()
+
         idx = self._index_at(event.x, event.y)
         if idx == self._active_index:
             return
@@ -156,9 +235,15 @@ class SpotKey:
             self._send_keys(self.cfg.shortcuts[idx].keys)
 
     def _on_leave(self, _event: tk.Event[Any]) -> None:
+        if self._in_close_zone:
+            self._leave_close_zone()
         if self._active_index is not None:
             self._active_index = None
             self._render_pie()
+
+    def _on_click(self, event: tk.Event[Any]) -> None:
+        if self._close_zone_armed and self._is_in_close_zone(event.x, event.y):
+            self._quit()
 
     def _send_keys(self, keys: tuple[Key | str, ...]) -> None:
         for k in keys:
@@ -179,7 +264,7 @@ class SpotKey:
         self.root.geometry(f"+{event.x_root - dx}+{event.y_root - dy}")
 
     def _on_quit(self, _event: tk.Event[Any]) -> None:
-        self.root.destroy()
+        self._quit()
 
     # -- Run -----------------------------------------------------------------
 

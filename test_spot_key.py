@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import tkinter as tk
 from unittest.mock import MagicMock, call, patch
 import pytest
 from pynput.keyboard import Key
@@ -21,7 +22,10 @@ def app(cfg):
     instance = SpotKey(cfg=cfg, keyboard=kb)
     instance.root.update_idletasks()
     yield instance
-    instance.root.destroy()
+    try:
+        instance.root.destroy()
+    except tk.TclError:
+        pass  # already destroyed (e.g. by close-zone tests)
 
 
 def _event(**kwargs: object) -> MagicMock:
@@ -44,7 +48,7 @@ class TestIndexAt:
 
     def test_left_of_center_is_third_slice(self, app):
         mid = app.cfg.diameter // 2
-        assert app._index_at(mid - 30, mid) == 2
+        assert app._index_at(mid - 60, mid) == 2
 
     def test_outside_circle_returns_none(self, app):
         assert app._index_at(0, 0) is None
@@ -128,6 +132,50 @@ class TestVisualFeedback:
         with patch.object(app, "_render_pie") as mock_render:
             app._on_leave(_event())
             mock_render.assert_called_once_with()
+
+
+class TestCloseZone:
+    def test_hover_enters_close_zone(self, app, cfg):
+        app._on_motion(_event(x=5, y=5))
+        assert app._in_close_zone is True
+
+    def test_hover_starts_unarmed(self, app):
+        app._on_motion(_event(x=5, y=5))
+        assert app._close_zone_armed is False
+
+    def test_leaving_close_zone_resets(self, app, cfg):
+        mid = cfg.diameter // 2
+        app._on_motion(_event(x=5, y=5))
+        app._on_motion(_event(x=mid, y=mid))  # move to pie
+        assert app._in_close_zone is False
+        assert app._close_zone_armed is False
+
+    def test_leave_canvas_resets_close_zone(self, app):
+        app._on_motion(_event(x=5, y=5))
+        app._on_leave(_event())
+        assert app._in_close_zone is False
+
+    def test_click_unarmed_does_not_quit(self, app):
+        app._on_motion(_event(x=5, y=5))
+        app._on_click(_event(x=5, y=5))
+        assert app.root.winfo_exists()
+
+    def test_click_armed_quits(self, app):
+        app._on_motion(_event(x=5, y=5))
+        app._arm_close_zone()  # simulate timer firing
+        app._on_click(_event(x=5, y=5))
+        # root.destroy() was called; any further tk call raises TclError
+        with pytest.raises(tk.TclError):
+            app.root.winfo_exists()
+
+    def test_arm_sets_flag(self, app):
+        app._on_motion(_event(x=5, y=5))
+        app._arm_close_zone()
+        assert app._close_zone_armed is True
+
+    def test_close_zone_does_not_fire_shortcut(self, app):
+        app._on_motion(_event(x=5, y=5))
+        app.keyboard.press.assert_not_called()
 
 
 class TestPieConstruction:
