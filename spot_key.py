@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
+import ctypes
 import math
+import sys
 import tkinter as tk
 from dataclasses import dataclass, field
 from typing import Any
 
+from PIL import Image, ImageDraw, ImageTk
 from pynput.keyboard import Controller, Key
+
+# Enable per-monitor DPI awareness so Windows doesn't bitmap-scale us.
+if sys.platform == "win32":
+    ctypes.windll.shcore.SetProcessDpiAwareness(2)  # type: ignore[union-attr]
+
+SUPERSAMPLE = 4  # draw at Nx resolution, downsample for smooth edges
 
 
 @dataclass(frozen=True)
@@ -45,7 +54,9 @@ class SpotKey:
 
         self.root = self._build_window()
         self.canvas = self._build_canvas()
-        self.slices = self._draw_slices()
+        self._photo: ImageTk.PhotoImage | None = None  # prevent GC
+        self._canvas_image: int | None = None
+        self._render_pie()
         self._bind_events()
 
     # -- Construction --------------------------------------------------------
@@ -74,23 +85,40 @@ class SpotKey:
         canvas.pack()
         return canvas
 
-    def _draw_slices(self) -> tuple[int, ...]:
-        """Draw equal pie slices, one per shortcut. Returns their canvas item IDs."""
-        n = len(self.cfg.shortcuts)
+    # -- Pillow-based pie rendering ------------------------------------------
+
+    def _render_pie(self, highlight: int | None = None) -> None:
+        """Render the pie chart with Pillow (supersampled for antialiasing)."""
         d = self.cfg.diameter
-        pad = 2
+        hi = d * SUPERSAMPLE
+        img = Image.new("RGBA", (hi, hi), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+
+        n = len(self.cfg.shortcuts)
         extent = 360 / n
-        ids: list[int] = []
+        pad = 2 * SUPERSAMPLE
+        bbox = (pad, pad, hi - pad, hi - pad)
+
         for i, sc in enumerate(self.cfg.shortcuts):
-            start = 90 - i * extent  # 12-o'clock, clockwise
-            arc_id = self.canvas.create_arc(
-                pad, pad, d - pad, d - pad,
-                start=start, extent=-extent,
-                fill=sc.color, outline=self.cfg.outline_color, width=2,
-                style=tk.PIESLICE,
-            )
-            ids.append(arc_id)
-        return tuple(ids)
+            start = 90 - i * extent
+            color = sc.hover_color if i == highlight else sc.color
+            draw.pieslice(bbox, start=-start, end=-(start - extent),
+                          fill=color, outline=self.cfg.outline_color, width=2 * SUPERSAMPLE)
+
+        # Downsample with LANCZOS for smooth edges
+        img = img.resize((d, d), Image.LANCZOS)
+
+        # Composite onto a background matching the transparent color so tkinter
+        # can punch through the non-pie area.
+        bg = Image.new("RGBA", (d, d), self.cfg.transparent_color)
+        bg.paste(img, (0, 0), img)
+        final = bg.convert("RGB")
+
+        self._photo = ImageTk.PhotoImage(final)
+        if self._canvas_image is None:
+            self._canvas_image = self.canvas.create_image(0, 0, anchor=tk.NW, image=self._photo)
+        else:
+            self.canvas.itemconfig(self._canvas_image, image=self._photo)
 
     def _bind_events(self) -> None:
         self.canvas.bind("<Motion>", self._on_motion)
@@ -121,25 +149,16 @@ class SpotKey:
         if idx == self._active_index:
             return
 
-        # Reset previous slice
-        if self._active_index is not None:
-            prev = self.cfg.shortcuts[self._active_index]
-            self.canvas.itemconfig(self.slices[self._active_index], fill=prev.color)
-
         self._active_index = idx
-        if idx is None:
-            return
+        self._render_pie(highlight=idx)
 
-        # Highlight and fire
-        sc = self.cfg.shortcuts[idx]
-        self.canvas.itemconfig(self.slices[idx], fill=sc.hover_color)
-        self._send_keys(sc.keys)
+        if idx is not None:
+            self._send_keys(self.cfg.shortcuts[idx].keys)
 
     def _on_leave(self, _event: tk.Event[Any]) -> None:
         if self._active_index is not None:
-            sc = self.cfg.shortcuts[self._active_index]
-            self.canvas.itemconfig(self.slices[self._active_index], fill=sc.color)
             self._active_index = None
+            self._render_pie()
 
     def _send_keys(self, keys: tuple[Key | str, ...]) -> None:
         for k in keys:

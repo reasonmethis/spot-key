@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock, call, patch
 import pytest
 from pynput.keyboard import Key
 
@@ -98,41 +98,50 @@ class TestShortcutTrigger:
 
 
 class TestVisualFeedback:
-    def test_hover_highlights_slice(self, app, cfg):
+    def test_hover_sets_active_index(self, app, cfg):
         mid = cfg.diameter // 2
         app._on_motion(_event(x=mid, y=5))
-        fill = app.canvas.itemcget(app.slices[0], "fill")
-        assert fill == cfg.shortcuts[0].hover_color
+        assert app._active_index == 0
 
-    def test_leave_resets_slice(self, app, cfg):
-        mid = cfg.diameter // 2
+    def test_leave_clears_active_index(self, app):
+        mid = app.cfg.diameter // 2
         app._on_motion(_event(x=mid, y=5))
         app._on_leave(_event())
-        fill = app.canvas.itemcget(app.slices[0], "fill")
-        assert fill == cfg.shortcuts[0].color
+        assert app._active_index is None
 
-    def test_moving_slices_resets_previous(self, app, cfg):
+    def test_moving_slices_updates_active_index(self, app, cfg):
         mid = cfg.diameter // 2
-        app._on_motion(_event(x=mid, y=5))              # highlight slice 0
-        app._on_motion(_event(x=mid + 20, y=mid + 15))  # move to slice 1
-        fill_0 = app.canvas.itemcget(app.slices[0], "fill")
-        fill_1 = app.canvas.itemcget(app.slices[1], "fill")
-        assert fill_0 == cfg.shortcuts[0].color
-        assert fill_1 == cfg.shortcuts[1].hover_color
+        app._on_motion(_event(x=mid, y=5))
+        assert app._active_index == 0
+        app._on_motion(_event(x=mid + 20, y=mid + 15))
+        assert app._active_index == 1
+
+    def test_render_pie_called_on_hover(self, app, cfg):
+        mid = cfg.diameter // 2
+        with patch.object(app, "_render_pie") as mock_render:
+            app._on_motion(_event(x=mid, y=5))
+            mock_render.assert_called_once_with(highlight=0)
+
+    def test_render_pie_called_on_leave(self, app):
+        mid = app.cfg.diameter // 2
+        app._on_motion(_event(x=mid, y=5))
+        with patch.object(app, "_render_pie") as mock_render:
+            app._on_leave(_event())
+            mock_render.assert_called_once_with()
 
 
 class TestPieConstruction:
-    def test_slice_count_matches_shortcuts(self, app, cfg):
-        assert len(app.slices) == len(cfg.shortcuts)
+    def test_canvas_has_image(self, app):
+        assert app._canvas_image is not None
+        assert app._photo is not None
 
-    def test_single_shortcut_draws_full_circle(self):
+    def test_single_shortcut_full_circle(self):
         one = Config(shortcuts=(
             Shortcut("Test", (Key.enter,), "#AAA", "#BBB"),
         ))
         kb = MagicMock()
         app = SpotKey(cfg=one, keyboard=kb)
         app.root.update_idletasks()
-        assert len(app.slices) == 1
         mid = one.diameter // 2
         assert app._index_at(mid, 5) == 0
         assert app._index_at(mid, one.diameter - 5) == 0
