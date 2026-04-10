@@ -1,0 +1,16 @@
+[project]
+name = "spot-key"
+version = "0.1.0"
+description = "A small floating circle that triggers a keystroke on hover"
+requires-python = ">=3.12"
+dependencies = [
+    "pynput>=1.8",
+]
+
+[project.scripts]
+spot-key = "spot_key:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]

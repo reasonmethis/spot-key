@@ -97,5 +97,9 @@ class SpotKey:
         self.root.mainloop()
 
 
-if __name__ == "__main__":
+def main():
     SpotKey().run()
+
+
+if __name__ == "__main__":
+    main()
