@@ -25,7 +25,7 @@ def app(cfg):
     try:
         instance.root.destroy()
     except tk.TclError:
-        pass  # already destroyed (e.g. by close-zone tests)
+        pass
 
 
 def _event(**kwargs: object) -> MagicMock:
@@ -36,8 +36,6 @@ def _event(**kwargs: object) -> MagicMock:
 
 
 class TestIndexAt:
-    """_index_at maps pixel coordinates to pie-slice indices."""
-
     def test_top_center_is_first_slice(self, app):
         mid = app.cfg.diameter // 2
         assert app._index_at(mid, 5) == 0
@@ -67,7 +65,7 @@ class TestShortcutTrigger:
     def test_hover_fires_after_timer(self, app, cfg):
         mid = cfg.diameter // 2
         app._on_motion(_event(x=mid, y=5))
-        app._fire_shortcut(0)  # simulate timer
+        app._fire_shortcut(0)
         sc = cfg.shortcuts[0]
         for k in sc.keys:
             app.keyboard.press.assert_any_call(k)
@@ -83,9 +81,9 @@ class TestShortcutTrigger:
 
     def test_moving_to_different_slice_cancels_and_starts_new(self, app, cfg):
         mid = cfg.diameter // 2
-        app._on_motion(_event(x=mid, y=5))                # slice 0
-        app._on_motion(_event(x=mid + 20, y=mid + 15))    # slice 1 — cancels slice 0 timer
-        app._fire_shortcut(1)  # simulate timer for slice 1
+        app._on_motion(_event(x=mid, y=5))
+        app._on_motion(_event(x=mid + 20, y=mid + 15))
+        app._fire_shortcut(1)
         sc = cfg.shortcuts[1]
         for k in sc.keys:
             app.keyboard.press.assert_any_call(k)
@@ -145,36 +143,55 @@ class TestVisualFeedback:
             mock_render.assert_called_once_with(highlight=0)
 
 
-class TestCloseZone:
-    def test_hover_enters_close_zone(self, app, cfg):
+class TestMenuZone:
+    def test_hover_enters_menu_zone(self, app):
         app._on_motion(_event(x=5, y=5))
-        assert app._in_close_zone is True
+        assert app._in_menu_zone is True
+        assert app._menu_zone_hover is True
 
-    def test_hover_arms_immediately(self, app):
-        app._on_motion(_event(x=5, y=5))
-        assert app._close_zone_armed is True
-
-    def test_leaving_close_zone_resets(self, app, cfg):
+    def test_leaving_menu_zone_resets(self, app, cfg):
         mid = cfg.diameter // 2
         app._on_motion(_event(x=5, y=5))
-        app._on_motion(_event(x=mid, y=mid))  # move to pie
-        assert app._in_close_zone is False
-        assert app._close_zone_armed is False
+        app._on_motion(_event(x=mid, y=mid))
+        assert app._in_menu_zone is False
+        assert app._menu_zone_hover is False
 
-    def test_leave_canvas_resets_close_zone(self, app):
+    def test_leave_canvas_resets_menu_zone(self, app):
         app._on_motion(_event(x=5, y=5))
         app._on_leave(_event())
-        assert app._in_close_zone is False
+        assert app._in_menu_zone is False
 
-    def test_click_armed_quits(self, app):
-        app._on_motion(_event(x=5, y=5))  # arms immediately
-        app._on_click(_event(x=5, y=5))
-        with pytest.raises(tk.TclError):
-            app.root.winfo_exists()
-
-    def test_close_zone_does_not_fire_shortcut(self, app):
+    def test_menu_zone_does_not_fire_shortcut(self, app):
         app._on_motion(_event(x=5, y=5))
         app.keyboard.press.assert_not_called()
+
+    def test_click_without_drag_shows_menu(self, app):
+        app._on_motion(_event(x=5, y=5))
+        app._on_button_down(_event(x=5, y=5, x_root=105, y_root=105))
+        with patch.object(app._menu, "tk_popup") as mock_popup:
+            app._on_button_up(_event(x=5, y=5))
+            mock_popup.assert_called_once()
+
+    def test_drag_does_not_show_menu(self, app):
+        app._on_motion(_event(x=5, y=5))
+        app._on_button_down(_event(x=5, y=5, x_root=105, y_root=105))
+        # Move beyond drag threshold
+        app._on_button_motion(_event(x=15, y=15, x_root=115, y_root=115))
+        assert app._dragging is True
+        with patch.object(app._menu, "tk_popup") as mock_popup:
+            app._on_button_up(_event(x=15, y=15))
+            mock_popup.assert_not_called()
+
+
+class TestDragging:
+    def test_drag_via_menu_zone(self, app):
+        app.root.geometry("+200+200")
+        app.root.update_idletasks()
+        app._on_motion(_event(x=5, y=5))
+        app._on_button_down(_event(x=5, y=5, x_root=205, y_root=205))
+        app._on_button_motion(_event(x=55, y=35, x_root=255, y_root=235))
+        app.root.update_idletasks()
+        assert app._dragging is True
 
 
 class TestPieConstruction:
@@ -189,17 +206,6 @@ class TestPieConstruction:
         assert app._index_at(mid, 5) == 0
         assert app._index_at(mid, one.diameter - 5) == 0
         app.root.destroy()
-
-
-class TestDragging:
-    def test_drag_repositions_window(self, app):
-        app.root.geometry("+200+200")
-        app.root.update_idletasks()
-        app._on_drag_start(_event(x_root=220, y_root=220))
-        app._on_drag_motion(_event(x_root=270, y_root=250))
-        app.root.update_idletasks()
-        assert app.root.winfo_x() == 250
-        assert app.root.winfo_y() == 230
 
 
 class TestWindowProperties:

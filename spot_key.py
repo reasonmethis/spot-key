@@ -55,11 +55,10 @@ class Config:
     ))
     diameter: int = 160
     outline_color: str = "#374151"
-    close_zone_size: int = 28
-    close_zone_color: str = "#6B7280"
-    close_zone_warn_color: str = "#EF4444"
-    shortcut_hover_ms: int = 330  # ms hover before a shortcut fires
-    close_auto_quit_ms: int = 5000
+    menu_zone_size: int = 28
+    menu_zone_color: str = "#6B7280"
+    menu_zone_hover_color: str = "#9CA3AF"
+    shortcut_hover_ms: int = 330
 
 
 def _update_layered_window(hwnd: int, img: Image.Image) -> None:
@@ -96,21 +95,12 @@ def _update_layered_window(hwnd: int, img: Image.Image) -> None:
     gdi32.SelectObject(hdc_mem, hbmp)
     ctypes.memmove(ppv_bits, raw, len(raw))
 
-    # BLENDFUNCTION packed as a DWORD: (BlendOp, BlendFlags, SourceConstantAlpha, AlphaFormat)
     blend = struct.pack("BBBB", AC_SRC_OVER, 0, 255, AC_SRC_ALPHA)
-
     pt_src = struct.pack("ii", 0, 0)
     size = struct.pack("ii", w, h)
 
     user32.UpdateLayeredWindow(
-        hwnd, hdc_screen,
-        None,                   # pptDst — keep current position
-        size,                   # psize
-        hdc_mem,                # hdcSrc
-        pt_src,                 # pptSrc
-        0,                      # crKey (unused)
-        blend,                  # pblend
-        ULW_ALPHA,              # dwFlags
+        hwnd, hdc_screen, None, size, hdc_mem, pt_src, 0, blend, ULW_ALPHA,
     )
 
     gdi32.DeleteObject(hbmp)
@@ -121,23 +111,25 @@ def _update_layered_window(hwnd: int, img: Image.Image) -> None:
 class SpotKey:
     """Frameless, always-on-top pie chart that sends a keystroke per segment on hover."""
 
+    DRAG_THRESHOLD = 5  # px movement before a click becomes a drag
+
     def __init__(self, cfg: Config = Config(), keyboard: Controller | None = None) -> None:
         self.cfg = cfg
         self.keyboard = keyboard or Controller()
-        self._active_index: int | None = None   # currently highlighted (fired)
-        self._pending_index: int | None = None  # waiting for hover timer
-        self._drag_origin: tuple[int, int] = (0, 0)
+        self._active_index: int | None = None
+        self._pending_index: int | None = None
         self._shortcut_timer: str | None = None
 
-        # Close-zone state
-        self._in_close_zone = False
-        self._close_zone_armed = False
-        self._close_auto_quit_timer: str | None = None
+        # Menu zone state
+        self._in_menu_zone = False
+        self._menu_zone_hover = False
+        self._dragging = False
+        self._drag_origin: tuple[int, int] = (0, 0)
+        self._click_origin: tuple[int, int] = (0, 0)
 
         self.root = self._build_window()
         self.canvas = self._build_canvas()
-        self._photo: ImageTk.PhotoImage | None = None  # prevent GC
-        self._canvas_image: int | None = None
+        self._menu = self._build_menu()
         self._render_pie()
         self._bind_events()
 
@@ -171,6 +163,13 @@ class SpotKey:
         canvas.pack()
         return canvas
 
+    def _build_menu(self) -> tk.Menu:
+        menu = tk.Menu(self.root, tearoff=0)
+        menu.add_command(label="Settings...", command=self._open_settings)
+        menu.add_separator()
+        menu.add_command(label="Quit", command=self._quit)
+        return menu
+
     # -- Pillow-based pie rendering ------------------------------------------
 
     def _render_pie(self, highlight: int | None = None) -> None:
@@ -192,45 +191,45 @@ class SpotKey:
             draw.pieslice(bbox, start=-start, end=-(start - extent),
                           fill=color, outline=self.cfg.outline_color, width=2 * ss)
 
-        # Draw close zone in top-left corner
-        cz = self.cfg.close_zone_size * ss
-        cz_color = self.cfg.close_zone_warn_color if self._close_zone_armed else self.cfg.close_zone_color
+        # Draw menu button in top-left corner
+        cz = self.cfg.menu_zone_size * ss
+        if self._menu_zone_hover:
+            btn_color = self.cfg.menu_zone_hover_color
+        else:
+            btn_color = self.cfg.menu_zone_color
         margin = 1 * ss
         draw.rounded_rectangle(
             (margin, margin, cz, cz),
-            radius=4 * ss, fill=cz_color, outline=self.cfg.outline_color, width=1 * ss,
+            radius=4 * ss, fill=btn_color, outline=self.cfg.outline_color, width=1 * ss,
         )
-        # Draw "×" in the close zone
-        x_margin = 6 * ss
-        x_size = cz - x_margin * 2 + margin
-        draw.line(
-            (x_margin, x_margin, x_margin + x_size, x_margin + x_size),
-            fill="#FFFFFF", width=2 * ss,
-        )
-        draw.line(
-            (x_margin + x_size, x_margin, x_margin, x_margin + x_size),
-            fill="#FFFFFF", width=2 * ss,
-        )
+        # Draw hamburger icon (three horizontal lines)
+        line_w = 2 * ss
+        line_color = "#FFFFFF"
+        cx_start = 7 * ss
+        cx_end = cz - 6 * ss
+        cy_mid = (margin + cz) // 2
+        gap = 5 * ss
+        for y_off in (-gap, 0, gap):
+            y = cy_mid + y_off
+            draw.line((cx_start, y, cx_end, y), fill=line_color, width=line_w)
 
         # Downsample with LANCZOS for smooth antialiased edges
         img = img.resize((d, d), Image.LANCZOS)
 
-        # Push the RGBA image to the layered window — true per-pixel alpha,
-        # no fringe on any background.
         hwnd = self.root.winfo_id()
         _update_layered_window(hwnd, img)
 
     def _bind_events(self) -> None:
         self.canvas.bind("<Motion>", self._on_motion)
         self.canvas.bind("<Leave>", self._on_leave)
-        self.canvas.bind("<Button-1>", self._on_click)
-        self.canvas.bind("<Button-3>", self._on_drag_start)
-        self.canvas.bind("<B3-Motion>", self._on_drag_motion)
+        self.canvas.bind("<Button-1>", self._on_button_down)
+        self.canvas.bind("<B1-Motion>", self._on_button_motion)
+        self.canvas.bind("<ButtonRelease-1>", self._on_button_up)
 
     # -- Hit detection -------------------------------------------------------
 
-    def _is_in_close_zone(self, x: int, y: int) -> bool:
-        cz = self.cfg.close_zone_size
+    def _is_in_menu_zone(self, x: int, y: int) -> bool:
+        cz = self.cfg.menu_zone_size
         return x <= cz and y <= cz
 
     def _index_at(self, x: int, y: int) -> int | None:
@@ -241,33 +240,35 @@ class SpotKey:
         if dx * dx + dy * dy > r * r:
             return None
         angle = math.degrees(math.atan2(dy, dx))  # 0°=right, 90°=up
-        # Normalise so 0° = 12-o'clock, increasing clockwise
         clock = (90 - angle) % 360
         extent = 360 / len(self.cfg.shortcuts)
         return int(clock // extent)
 
-    # -- Close zone ----------------------------------------------------------
+    # -- Menu zone -----------------------------------------------------------
 
-    def _enter_close_zone(self) -> None:
-        if self._in_close_zone:
+    def _enter_menu_zone(self) -> None:
+        if self._in_menu_zone:
             return
-        self._in_close_zone = True
-        self._close_zone_armed = True
+        self._in_menu_zone = True
+        self._menu_zone_hover = True
         self._cancel_shortcut_timer()
         if self._active_index is not None:
             self._active_index = None
         self._render_pie()
-        self._close_auto_quit_timer = self.root.after(
-            self.cfg.close_auto_quit_ms, self._quit,
-        )
 
-    def _leave_close_zone(self) -> None:
-        self._in_close_zone = False
-        self._close_zone_armed = False
-        if self._close_auto_quit_timer is not None:
-            self.root.after_cancel(self._close_auto_quit_timer)
-            self._close_auto_quit_timer = None
+    def _leave_menu_zone(self) -> None:
+        self._in_menu_zone = False
+        self._menu_zone_hover = False
         self._render_pie()
+
+    def _show_menu(self) -> None:
+        x = self.root.winfo_x()
+        y = self.root.winfo_y()
+        self._menu.tk_popup(x, y + self.cfg.menu_zone_size)
+
+    def _open_settings(self) -> None:
+        # Placeholder — will open a settings UI in the future
+        pass
 
     def _quit(self) -> None:
         self.root.destroy()
@@ -280,12 +281,15 @@ class SpotKey:
             self._shortcut_timer = None
 
     def _on_motion(self, event: tk.Event[Any]) -> None:
-        if self._is_in_close_zone(event.x, event.y):
-            self._enter_close_zone()
+        if self._dragging:
             return
 
-        if self._in_close_zone:
-            self._leave_close_zone()
+        if self._is_in_menu_zone(event.x, event.y):
+            self._enter_menu_zone()
+            return
+
+        if self._in_menu_zone:
+            self._leave_menu_zone()
 
         idx = self._index_at(event.x, event.y)
         if idx == self._active_index or idx == self._pending_index:
@@ -293,7 +297,6 @@ class SpotKey:
 
         self._cancel_shortcut_timer()
 
-        # Reset highlight from previous slice
         if self._active_index is not None:
             self._active_index = None
             self._render_pie()
@@ -316,36 +319,52 @@ class SpotKey:
     def _on_leave(self, _event: tk.Event[Any]) -> None:
         self._cancel_shortcut_timer()
         self._pending_index = None
-        if self._in_close_zone:
-            self._leave_close_zone()
+        if self._in_menu_zone:
+            self._leave_menu_zone()
         if self._active_index is not None:
             self._active_index = None
             self._render_pie()
 
-    def _on_click(self, event: tk.Event[Any]) -> None:
-        if self._close_zone_armed and self._is_in_close_zone(event.x, event.y):
-            self._quit()
+    # -- Click / drag --------------------------------------------------------
+
+    def _on_button_down(self, event: tk.Event[Any]) -> None:
+        self._dragging = False
+        self._click_origin = (event.x_root, event.y_root)
+        self._drag_origin = (
+            event.x_root - self.root.winfo_x(),
+            event.y_root - self.root.winfo_y(),
+        )
+
+    def _on_button_motion(self, event: tk.Event[Any]) -> None:
+        if not self._is_in_menu_zone(*self._click_origin_local()):
+            return
+        dx = event.x_root - self._click_origin[0]
+        dy = event.y_root - self._click_origin[1]
+        if not self._dragging and (abs(dx) > self.DRAG_THRESHOLD or abs(dy) > self.DRAG_THRESHOLD):
+            self._dragging = True
+        if self._dragging:
+            ox, oy = self._drag_origin
+            self.root.geometry(f"+{event.x_root - ox}+{event.y_root - oy}")
+
+    def _on_button_up(self, event: tk.Event[Any]) -> None:
+        if self._dragging:
+            self._dragging = False
+            return
+        if self._is_in_menu_zone(event.x, event.y):
+            self._show_menu()
+
+    def _click_origin_local(self) -> tuple[int, int]:
+        """Convert the click origin from screen to widget-local coordinates."""
+        return (
+            self._click_origin[0] - self.root.winfo_x(),
+            self._click_origin[1] - self.root.winfo_y(),
+        )
 
     def _send_keys(self, keys: tuple[Key | str, ...]) -> None:
         for k in keys:
             self.keyboard.press(k)
         for k in reversed(keys):
             self.keyboard.release(k)
-
-    # -- Drag ----------------------------------------------------------------
-
-    def _on_drag_start(self, event: tk.Event[Any]) -> None:
-        self._drag_origin = (
-            event.x_root - self.root.winfo_x(),
-            event.y_root - self.root.winfo_y(),
-        )
-
-    def _on_drag_motion(self, event: tk.Event[Any]) -> None:
-        dx, dy = self._drag_origin
-        self.root.geometry(f"+{event.x_root - dx}+{event.y_root - dy}")
-
-    def _on_quit(self, _event: tk.Event[Any]) -> None:
-        self._quit()
 
     # -- Run -----------------------------------------------------------------
 
