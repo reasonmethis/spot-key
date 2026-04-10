@@ -124,6 +124,7 @@ class SpotKey:
         self._in_menu_zone = False
         self._menu_zone_hover = False
         self._dragging = False
+        self._click_started_in_menu = False
         self._drag_origin: tuple[int, int] = (0, 0)
         self._click_origin: tuple[int, int] = (0, 0)
 
@@ -329,6 +330,7 @@ class SpotKey:
 
     def _on_button_down(self, event: tk.Event[Any]) -> None:
         self._dragging = False
+        self._click_started_in_menu = self._is_in_menu_zone(event.x, event.y)
         self._click_origin = (event.x_root, event.y_root)
         self._drag_origin = (
             event.x_root - self.root.winfo_x(),
@@ -336,7 +338,7 @@ class SpotKey:
         )
 
     def _on_button_motion(self, event: tk.Event[Any]) -> None:
-        if not self._is_in_menu_zone(*self._click_origin_local()):
+        if not self._click_started_in_menu:
             return
         dx = event.x_root - self._click_origin[0]
         dy = event.y_root - self._click_origin[1]
@@ -350,15 +352,8 @@ class SpotKey:
         if self._dragging:
             self._dragging = False
             return
-        if self._is_in_menu_zone(event.x, event.y):
+        if self._click_started_in_menu:
             self._show_menu()
-
-    def _click_origin_local(self) -> tuple[int, int]:
-        """Convert the click origin from screen to widget-local coordinates."""
-        return (
-            self._click_origin[0] - self.root.winfo_x(),
-            self._click_origin[1] - self.root.winfo_y(),
-        )
 
     def _send_keys(self, keys: tuple[Key | str, ...]) -> None:
         for k in keys:

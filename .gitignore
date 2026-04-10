@@ -3,4 +3,5 @@ __pycache__/
 .venv/
 .pytest_cache/
 visual_test_*.png
+visual_test_crop.png
 edge_*.png
