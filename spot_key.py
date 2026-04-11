@@ -8,7 +8,7 @@ import math
 import struct
 import sys
 import tkinter as tk
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import numpy as np
@@ -59,6 +59,357 @@ class Config:
     menu_zone_color: str = "#6B7280"
     menu_zone_hover_color: str = "#9CA3AF"
     shortcut_hover_ms: int = 330
+
+
+# -- Colour palette and key-mapping helpers ----------------------------------
+
+COLOR_PALETTE: tuple[tuple[str, str, str], ...] = (
+    ("#4A90D9", "#2563EB", "Blue"),
+    ("#10B981", "#059669", "Green"),
+    ("#F59E0B", "#D97706", "Amber"),
+    ("#EF4444", "#DC2626", "Red"),
+    ("#8B5CF6", "#7C3AED", "Purple"),
+    ("#EC4899", "#DB2777", "Pink"),
+    ("#06B6D4", "#0891B2", "Cyan"),
+    ("#F97316", "#EA580C", "Orange"),
+)
+
+_KEYSYM_TO_PYNPUT: dict[str, Key] = {
+    "Return": Key.enter, "Escape": Key.esc, "space": Key.space,
+    "Tab": Key.tab, "BackSpace": Key.backspace, "Delete": Key.delete,
+    "Up": Key.up, "Down": Key.down, "Left": Key.left, "Right": Key.right,
+    "Home": Key.home, "End": Key.end,
+    "Page_Up": Key.page_up, "Page_Down": Key.page_down,
+    "Insert": Key.insert, "Caps_Lock": Key.caps_lock,
+}
+for _i in range(1, 21):
+    _KEYSYM_TO_PYNPUT[f"F{_i}"] = getattr(Key, f"f{_i}")
+
+_MODIFIER_KEYSYMS = frozenset({
+    "Control_L", "Control_R", "Shift_L", "Shift_R",
+    "Alt_L", "Alt_R", "Super_L", "Super_R",
+})
+
+
+def _keys_to_label(keys: tuple[Key | str, ...]) -> str:
+    """Convert a pynput key tuple to a human-readable label like 'Ctrl+Q'."""
+    parts: list[str] = []
+    for k in keys:
+        if isinstance(k, Key):
+            n = k.name
+            if n.startswith("ctrl"):
+                parts.append("Ctrl")
+            elif n.startswith("alt"):
+                parts.append("Alt")
+            elif n.startswith("shift"):
+                parts.append("Shift")
+            elif n in ("cmd", "cmd_l", "cmd_r"):
+                parts.append("Win")
+            else:
+                pretty = n.replace("_", " ").title() if "_" in n else n.capitalize()
+                parts.append(pretty)
+        else:
+            parts.append(k.upper())
+    return "+".join(parts)
+
+
+def _event_to_keys(event: tk.Event[Any]) -> tuple[Key | str, ...] | None:
+    """Map a tkinter KeyPress *event* to a pynput key tuple, or ``None``."""
+    keysym: str = event.keysym
+    if keysym in _MODIFIER_KEYSYMS:
+        return None
+
+    keys: list[Key | str] = []
+    if event.state & 0x4:
+        keys.append(Key.ctrl_l)
+    if event.state & 0x1:
+        keys.append(Key.shift_l)
+    if event.state & 0x20000:
+        keys.append(Key.alt_l)
+
+    if keysym in _KEYSYM_TO_PYNPUT:
+        keys.append(_KEYSYM_TO_PYNPUT[keysym])
+    elif len(keysym) == 1:
+        keys.append(keysym.lower())
+    elif event.char and len(event.char) == 1 and event.char.isprintable():
+        keys.append(event.char.lower())
+    else:
+        return None
+
+    return tuple(keys) if keys else None
+
+
+# -- Settings dialog ---------------------------------------------------------
+
+class SettingsDialog:
+    """Modal dark-themed dialog for adding, removing, and editing shortcuts."""
+
+    _BG = "#1F2937"
+    _CARD = "#374151"
+    _FG = "#F3F4F6"
+    _DIM = "#9CA3AF"
+    _BORDER = "#4B5563"
+    _BTN = "#4B5563"
+    _BTN_HV = "#6B7280"
+    _ACCENT = "#2563EB"
+    _ACCENT_HV = "#1D4ED8"
+    _CAPTURE = "#7C3AED"
+    _FONT = ("Segoe UI", 10)
+    _FONT_B = ("Segoe UI", 10, "bold")
+    _FONT_TITLE = ("Segoe UI", 13, "bold")
+    _SWATCH = 18
+
+    def __init__(
+        self,
+        parent: tk.Tk,
+        shortcuts: tuple[Shortcut, ...],
+        on_apply: Any,
+    ) -> None:
+        self._on_apply = on_apply
+        self._items: list[dict[str, Any]] = [
+            {"keys": sc.keys, "label": sc.label, "color_idx": self._color_idx(sc.color)}
+            for sc in shortcuts
+        ]
+        self._capturing: int | None = None
+
+        win = tk.Toplevel(parent)
+        win.title("Spot Key \u2014 Settings")
+        win.configure(bg=self._BG)
+        win.resizable(False, False)
+        win.attributes("-topmost", True)
+        self._win = win
+
+        self._build(win)
+
+        win.update_idletasks()
+        x = win.winfo_screenwidth() // 2 - win.winfo_width() // 2
+        y = win.winfo_screenheight() // 2 - win.winfo_height() // 2
+        win.geometry(f"+{x}+{y}")
+
+        win.grab_set()
+        win.focus_set()
+        win.bind("<Escape>", self._on_esc)
+
+    # -- helpers -------------------------------------------------------------
+
+    @staticmethod
+    def _color_idx(color: str) -> int:
+        lo = color.lower()
+        for i, (c, _, _) in enumerate(COLOR_PALETTE):
+            if c.lower() == lo:
+                return i
+        return 0
+
+    @staticmethod
+    def _hoverable(w: tk.Widget, normal: str, hover: str) -> None:
+        w.bind("<Enter>", lambda _: w.configure(bg=hover))
+        w.bind("<Leave>", lambda _: w.configure(bg=normal))
+
+    # -- layout --------------------------------------------------------------
+
+    def _build(self, win: tk.Toplevel) -> None:
+        pad = 16
+
+        tk.Label(
+            win, text="Shortcuts", font=self._FONT_TITLE,
+            bg=self._BG, fg=self._FG,
+        ).pack(anchor="w", padx=pad, pady=(pad, 8))
+
+        self._list = tk.Frame(win, bg=self._BG)
+        self._list.pack(fill="x", padx=pad)
+        self._refresh()
+
+        af = tk.Frame(win, bg=self._BG)
+        af.pack(fill="x", padx=pad, pady=(8, 0))
+        add = tk.Button(
+            af, text="+ Add Shortcut", font=self._FONT,
+            bg=self._BTN, fg=self._FG,
+            activebackground=self._BTN_HV, activeforeground=self._FG,
+            bd=0, padx=12, pady=6, cursor="hand2", command=self._add,
+        )
+        add.pack(anchor="w")
+        self._hoverable(add, self._BTN, self._BTN_HV)
+
+        tk.Frame(win, bg=self._BORDER, height=1).pack(
+            fill="x", padx=pad, pady=(pad, 0),
+        )
+
+        bf = tk.Frame(win, bg=self._BG)
+        bf.pack(fill="x", padx=pad, pady=pad)
+
+        cancel = tk.Button(
+            bf, text="Cancel", font=self._FONT,
+            bg=self._BTN, fg=self._FG,
+            activebackground=self._BTN_HV, activeforeground=self._FG,
+            bd=0, padx=20, pady=8, cursor="hand2", command=self._cancel,
+        )
+        cancel.pack(side="right", padx=(8, 0))
+        self._hoverable(cancel, self._BTN, self._BTN_HV)
+
+        apply_ = tk.Button(
+            bf, text="Apply", font=self._FONT_B,
+            bg=self._ACCENT, fg="#FFF",
+            activebackground=self._ACCENT_HV, activeforeground="#FFF",
+            bd=0, padx=20, pady=8, cursor="hand2", command=self._apply,
+        )
+        apply_.pack(side="right")
+        self._hoverable(apply_, self._ACCENT, self._ACCENT_HV)
+
+    # -- shortcut rows -------------------------------------------------------
+
+    def _refresh(self) -> None:
+        for w in self._list.winfo_children():
+            w.destroy()
+        if not self._items:
+            tk.Label(
+                self._list, text="No shortcuts \u2014 click + Add Shortcut",
+                font=self._FONT, bg=self._BG, fg=self._DIM,
+            ).pack(pady=20)
+            return
+        for i in range(len(self._items)):
+            self._row(i)
+
+    def _row(self, idx: int) -> None:
+        item = self._items[idx]
+        card = tk.Frame(
+            self._list, bg=self._CARD,
+            highlightbackground=self._BORDER, highlightthickness=1,
+        )
+        card.pack(fill="x", pady=(0, 6))
+        inner = tk.Frame(card, bg=self._CARD)
+        inner.pack(fill="x", padx=10, pady=8)
+
+        # Key-combo button (click to re-record)
+        btn = tk.Button(
+            inner, text=item["label"], font=self._FONT_B,
+            bg=self._BTN, fg=self._FG,
+            activebackground=self._BTN_HV, activeforeground=self._FG,
+            bd=0, padx=12, pady=4, cursor="hand2", width=14, anchor="w",
+            command=lambda i=idx: self._capture_start(i),
+        )
+        btn.pack(side="left")
+        self._hoverable(btn, self._BTN, self._BTN_HV)
+        item["_btn"] = btn
+
+        # Delete button (disabled when only one shortcut remains)
+        sole = len(self._items) == 1
+        xfg = "#555" if sole else self._DIM
+        tk.Button(
+            inner, text="\u00d7", font=("Segoe UI", 14),
+            bg=self._CARD, fg=xfg,
+            activebackground=self._CARD,
+            activeforeground="#555" if sole else "#EF4444",
+            bd=0, padx=4, cursor="arrow" if sole else "hand2",
+            command=(lambda: None) if sole else (lambda i=idx: self._remove(i)),
+        ).pack(side="right")
+
+        # Colour swatches
+        sf = tk.Frame(inner, bg=self._CARD)
+        sf.pack(side="right", padx=(12, 8))
+        s = self._SWATCH
+        for ci, (color, _, _) in enumerate(COLOR_PALETTE):
+            c = tk.Canvas(sf, width=s, height=s, bg=self._CARD,
+                          highlightthickness=0, cursor="hand2")
+            if ci == item["color_idx"]:
+                c.create_oval(1, 1, s - 1, s - 1, fill=color, outline="#FFF", width=2)
+            else:
+                c.create_oval(3, 3, s - 3, s - 3, fill=color, outline="")
+            c.bind("<Button-1>", lambda _, i=idx, ci_=ci: self._pick_color(i, ci_))
+            c.pack(side="left", padx=1)
+
+    # -- key capture ---------------------------------------------------------
+
+    def _capture_start(self, idx: int) -> None:
+        self._capture_cancel()
+        self._capturing = idx
+        btn = self._items[idx]["_btn"]
+        btn.configure(text="Press keys\u2026", bg=self._CAPTURE)
+        btn.bind("<Enter>", lambda _: None)
+        btn.bind("<Leave>", lambda _: None)
+        self._win.bind("<KeyPress>", self._on_key)
+
+    def _on_key(self, event: tk.Event[Any]) -> str:
+        if self._capturing is None:
+            return "break"
+
+        keysym: str = event.keysym
+        if keysym in _MODIFIER_KEYSYMS:
+            parts: list[str] = []
+            if event.state & 0x4 or "Control" in keysym:
+                parts.append("Ctrl")
+            if event.state & 0x1 or "Shift" in keysym:
+                parts.append("Shift")
+            if event.state & 0x20000 or "Alt" in keysym:
+                parts.append("Alt")
+            self._items[self._capturing]["_btn"].configure(
+                text="+".join(parts) + "+\u2026",
+            )
+            return "break"
+
+        if keysym == "Escape":
+            self._capture_cancel()
+            return "break"
+
+        keys = _event_to_keys(event)
+        if keys is not None:
+            item = self._items[self._capturing]
+            item["keys"] = keys
+            item["label"] = _keys_to_label(keys)
+            btn = item["_btn"]
+            btn.configure(text=item["label"], bg=self._BTN)
+            self._hoverable(btn, self._BTN, self._BTN_HV)
+            self._capturing = None
+            self._win.unbind("<KeyPress>")
+        return "break"
+
+    def _capture_cancel(self) -> None:
+        if self._capturing is not None:
+            item = self._items[self._capturing]
+            btn = item["_btn"]
+            btn.configure(text=item["label"], bg=self._BTN)
+            self._hoverable(btn, self._BTN, self._BTN_HV)
+            self._capturing = None
+            self._win.unbind("<KeyPress>")
+
+    # -- actions -------------------------------------------------------------
+
+    def _pick_color(self, idx: int, color_idx: int) -> None:
+        self._items[idx]["color_idx"] = color_idx
+        self._refresh()
+
+    def _add(self) -> None:
+        used = {it["color_idx"] for it in self._items}
+        ci = next((i for i in range(len(COLOR_PALETTE)) if i not in used), 0)
+        self._items.append({"keys": (Key.enter,), "label": "Enter", "color_idx": ci})
+        self._refresh()
+        self._capture_start(len(self._items) - 1)
+
+    def _remove(self, idx: int) -> None:
+        if len(self._items) <= 1:
+            return
+        self._capture_cancel()
+        self._items.pop(idx)
+        self._refresh()
+
+    def _apply(self) -> None:
+        self._capture_cancel()
+        shortcuts: list[Shortcut] = []
+        for item in self._items:
+            c, h, _ = COLOR_PALETTE[item["color_idx"]]
+            shortcuts.append(Shortcut(
+                label=item["label"], keys=item["keys"], color=c, hover_color=h,
+            ))
+        self._on_apply(tuple(shortcuts))
+        self._win.destroy()
+
+    def _cancel(self) -> None:
+        self._win.destroy()
+
+    def _on_esc(self, _event: tk.Event[Any]) -> None:
+        if self._capturing is not None:
+            self._capture_cancel()
+        else:
+            self._cancel()
 
 
 def _update_layered_window(hwnd: int, img: Image.Image) -> None:
@@ -153,6 +504,16 @@ class SpotKey:
         hwnd = root.winfo_id()
         style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
         user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style | WS_EX_LAYERED)
+
+        # Re-assert topmost after style change (SetWindowLongW can reset Z-order).
+        HWND_TOPMOST = -1
+        SWP_NOMOVE = 0x0002
+        SWP_NOSIZE = 0x0001
+        SWP_NOACTIVATE = 0x0010
+        user32.SetWindowPos(
+            hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        )
 
         return root
 
@@ -268,8 +629,14 @@ class SpotKey:
         self._menu.tk_popup(x, y + self.cfg.menu_zone_size)
 
     def _open_settings(self) -> None:
-        # Placeholder — will open a settings UI in the future
-        pass
+        SettingsDialog(self.root, self.cfg.shortcuts, self._apply_settings)
+
+    def _apply_settings(self, shortcuts: tuple[Shortcut, ...]) -> None:
+        self.cfg = replace(self.cfg, shortcuts=shortcuts)
+        self._cancel_shortcut_timer()
+        self._active_index = None
+        self._pending_index = None
+        self._render_pie()
 
     def _quit(self) -> None:
         self.root.destroy()
