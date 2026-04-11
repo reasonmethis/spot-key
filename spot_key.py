@@ -4,16 +4,18 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.wintypes as wt
+import json
 import math
 import struct
 import sys
 import tkinter as tk
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageTk
-from pynput.keyboard import Controller, Key
+from pynput.keyboard import Controller, Key, KeyCode, Listener
 
 # Enable per-monitor DPI awareness so Windows doesn't bitmap-scale us.
 if sys.platform == "win32":
@@ -80,6 +82,7 @@ _KEYSYM_TO_PYNPUT: dict[str, Key] = {
     "Up": Key.up, "Down": Key.down, "Left": Key.left, "Right": Key.right,
     "Home": Key.home, "End": Key.end,
     "Page_Up": Key.page_up, "Page_Down": Key.page_down,
+    "Prior": Key.page_up, "Next": Key.page_down,  # Windows/X11 keysym aliases
     "Insert": Key.insert, "Caps_Lock": Key.caps_lock,
 }
 for _i in range(1, 21):
@@ -88,6 +91,14 @@ for _i in range(1, 21):
 _MODIFIER_KEYSYMS = frozenset({
     "Control_L", "Control_R", "Shift_L", "Shift_R",
     "Alt_L", "Alt_R", "Super_L", "Super_R",
+})
+
+# pynput Key objects that are modifiers (used by the low-level key capture).
+_PYNPUT_MODIFIERS = frozenset({
+    Key.ctrl_l, Key.ctrl_r,
+    Key.shift, Key.shift_l, Key.shift_r,
+    Key.alt_l, Key.alt_r, Key.alt_gr,
+    Key.cmd, Key.cmd_l, Key.cmd_r,
 })
 
 
@@ -137,6 +148,46 @@ def _event_to_keys(event: tk.Event[Any]) -> tuple[Key | str, ...] | None:
         return None
 
     return tuple(keys) if keys else None
+
+
+# -- Config persistence ------------------------------------------------------
+
+_CONFIG_PATH = Path(__file__).parent / "spot_key_config.json"
+
+
+def _save_shortcuts(shortcuts: tuple[Shortcut, ...]) -> None:
+    """Write shortcuts to a JSON config file."""
+    data = [
+        {
+            "label": sc.label,
+            "keys": [f"Key.{k.name}" if isinstance(k, Key) else k for k in sc.keys],
+            "color": sc.color,
+            "hover_color": sc.hover_color,
+        }
+        for sc in shortcuts
+    ]
+    _CONFIG_PATH.write_text(json.dumps({"shortcuts": data}, indent=2), encoding="utf-8")
+
+
+def _load_shortcuts() -> tuple[Shortcut, ...] | None:
+    """Load shortcuts from the JSON config file, or return None."""
+    if not _CONFIG_PATH.exists():
+        return None
+    try:
+        data = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
+        shortcuts: list[Shortcut] = []
+        for item in data["shortcuts"]:
+            keys = tuple(
+                getattr(Key, k[4:]) if k.startswith("Key.") else k
+                for k in item["keys"]
+            )
+            shortcuts.append(Shortcut(
+                label=item["label"], keys=keys,
+                color=item["color"], hover_color=item["hover_color"],
+            ))
+        return tuple(shortcuts)
+    except (json.JSONDecodeError, KeyError, AttributeError, TypeError):
+        return None
 
 
 # -- Settings dialog ---------------------------------------------------------
@@ -189,6 +240,7 @@ class SettingsDialog:
         win.grab_set()
         win.focus_set()
         win.bind("<Escape>", self._on_esc)
+        win.protocol("WM_DELETE_WINDOW", self._cancel)
 
     # -- helpers -------------------------------------------------------------
 
@@ -318,58 +370,108 @@ class SettingsDialog:
             c.pack(side="left", padx=1)
 
     # -- key capture ---------------------------------------------------------
+    #
+    # We use pynput's low-level keyboard hook (WH_KEYBOARD_LL) instead of
+    # tkinter key events.  This is necessary because:
+    # 1. Tkinter misreports some Ctrl+<extended key> combos on Windows
+    #    (e.g. Ctrl+PageDown arrives as Ctrl+V).
+    # 2. Global hotkeys registered by other apps (via RegisterHotKey) swallow
+    #    the key before tkinter ever sees it.  Low-level hooks fire first.
 
     def _capture_start(self, idx: int) -> None:
         self._capture_cancel()
         self._capturing = idx
+        self._held_mods: set[Key] = set()
         btn = self._items[idx]["_btn"]
         btn.configure(text="Press keys\u2026", bg=self._CAPTURE)
         btn.bind("<Enter>", lambda _: None)
         btn.bind("<Leave>", lambda _: None)
-        self._win.bind("<KeyPress>", self._on_key)
+        self._listener = Listener(
+            on_press=self._on_hook_press,
+            on_release=self._on_hook_release,
+        )
+        self._listener.start()
 
-    def _on_key(self, event: tk.Event[Any]) -> str:
+    def _on_hook_press(self, key: Key | KeyCode) -> bool | None:
+        """Called on the listener thread for every key-down."""
+        if key in _PYNPUT_MODIFIERS:
+            self._held_mods.add(key)
+            self._win.after(0, self._update_mod_preview)
+            return  # keep listening
+
+        if key == Key.esc:
+            self._win.after(0, self._capture_cancel)
+            return False  # stop listener
+
+        # Non-modifier → build the combo and finalize.
+        keys = self._build_capture_keys(key)
+        if keys:
+            self._win.after(0, self._finish_capture, keys)
+        return False  # stop listener
+
+    def _on_hook_release(self, key: Key | KeyCode) -> bool | None:
+        """Called on the listener thread for every key-up."""
         if self._capturing is None:
-            return "break"
+            return False
+        self._held_mods.discard(key)
+        self._win.after(0, self._update_mod_preview)
 
-        keysym: str = event.keysym
-        if keysym in _MODIFIER_KEYSYMS:
-            parts: list[str] = []
-            if event.state & 0x4 or "Control" in keysym:
-                parts.append("Ctrl")
-            if event.state & 0x1 or "Shift" in keysym:
-                parts.append("Shift")
-            if event.state & 0x20000 or "Alt" in keysym:
-                parts.append("Alt")
-            self._items[self._capturing]["_btn"].configure(
-                text="+".join(parts) + "+\u2026",
-            )
-            return "break"
+    def _update_mod_preview(self) -> None:
+        if self._capturing is None:
+            return
+        parts: list[str] = []
+        if self._held_mods & {Key.ctrl_l, Key.ctrl_r}:
+            parts.append("Ctrl")
+        if self._held_mods & {Key.shift, Key.shift_l, Key.shift_r}:
+            parts.append("Shift")
+        if self._held_mods & {Key.alt_l, Key.alt_r, Key.alt_gr}:
+            parts.append("Alt")
+        text = "+".join(parts) + "+\u2026" if parts else "Press keys\u2026"
+        self._items[self._capturing]["_btn"].configure(text=text)
 
-        if keysym == "Escape":
-            self._capture_cancel()
-            return "break"
+    def _build_capture_keys(self, key: Key | KeyCode) -> tuple[Key | str, ...]:
+        keys: list[Key | str] = []
+        if self._held_mods & {Key.ctrl_l, Key.ctrl_r}:
+            keys.append(Key.ctrl_l)
+        if self._held_mods & {Key.shift, Key.shift_l, Key.shift_r}:
+            keys.append(Key.shift_l)
+        if self._held_mods & {Key.alt_l, Key.alt_r, Key.alt_gr}:
+            keys.append(Key.alt_l)
 
-        keys = _event_to_keys(event)
-        if keys is not None:
-            item = self._items[self._capturing]
-            item["keys"] = keys
-            item["label"] = _keys_to_label(keys)
-            btn = item["_btn"]
-            btn.configure(text=item["label"], bg=self._BTN)
-            self._hoverable(btn, self._BTN, self._BTN_HV)
-            self._capturing = None
-            self._win.unbind("<KeyPress>")
-        return "break"
+        if isinstance(key, Key):
+            keys.append(key)
+        elif isinstance(key, KeyCode):
+            if key.char and key.char.isprintable():
+                keys.append(key.char.lower())
+            elif key.vk is not None and chr(key.vk).isalnum():
+                keys.append(chr(key.vk).lower())
+            else:
+                return ()
+
+        return tuple(keys)
+
+    def _finish_capture(self, keys: tuple[Key | str, ...]) -> None:
+        if self._capturing is None:
+            return
+        item = self._items[self._capturing]
+        item["keys"] = keys
+        item["label"] = _keys_to_label(keys)
+        btn = item["_btn"]
+        btn.configure(text=item["label"], bg=self._BTN)
+        self._hoverable(btn, self._BTN, self._BTN_HV)
+        self._capturing = None
+        self._held_mods = set()
 
     def _capture_cancel(self) -> None:
         if self._capturing is not None:
+            if hasattr(self, "_listener") and self._listener.is_alive():
+                self._listener.stop()
             item = self._items[self._capturing]
             btn = item["_btn"]
             btn.configure(text=item["label"], bg=self._BTN)
             self._hoverable(btn, self._BTN, self._BTN_HV)
             self._capturing = None
-            self._win.unbind("<KeyPress>")
+            self._held_mods = set()
 
     # -- actions -------------------------------------------------------------
 
@@ -637,6 +739,7 @@ class SpotKey:
         self._active_index = None
         self._pending_index = None
         self._render_pie()
+        _save_shortcuts(shortcuts)
 
     def _quit(self) -> None:
         self.root.destroy()
@@ -735,7 +838,9 @@ class SpotKey:
 
 
 def main() -> None:
-    SpotKey().run()
+    saved = _load_shortcuts()
+    cfg = Config(shortcuts=saved) if saved else Config()
+    SpotKey(cfg).run()
 
 
 if __name__ == "__main__":
