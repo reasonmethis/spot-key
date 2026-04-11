@@ -27,7 +27,7 @@ Each slice of the pie represents a different keyboard shortcut. Hover over a sli
 git clone https://github.com/reasonmethis/spot-key.git
 cd spot-key
 uv sync
-uv run python spot_key.py
+uv run python -m spot_key
 ```
 
 ## Default shortcuts
@@ -38,7 +38,7 @@ uv run python spot_key.py
 | Bottom-right | Green | Ctrl+C |
 | Bottom-left | Amber | Enter |
 
-Shortcuts are configured in the `Config` dataclass in `spot_key.py`. A settings UI is planned.
+Shortcuts can be customised via the Settings dialog (hamburger menu → Settings).
 
 ## Controls
 
