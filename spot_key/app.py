@@ -64,6 +64,7 @@ class SpotKey:
 
         # Tray icon — runs on a background thread, marshals back via after().
         self._tray = TrayIcon(
+            is_hidden=lambda: self._hidden,
             on_toggle=lambda: self.root.after(0, self._toggle_visibility),
             on_show=lambda: self.root.after(0, self._show),
             on_hide=lambda: self.root.after(0, self._hide),
@@ -246,6 +247,7 @@ class SpotKey:
         self._pending_index = None
         self.root.withdraw()
         self._hidden = True
+        self._tray.refresh()
 
     def _show(self) -> None:
         """Restore the overlay and re-assert topmost on top of other windows."""
@@ -254,6 +256,7 @@ class SpotKey:
         self.root.deiconify()
         self.root.attributes("-topmost", True)
         self._hidden = False
+        self._tray.refresh()
 
     def _toggle_visibility(self) -> None:
         if self._hidden:

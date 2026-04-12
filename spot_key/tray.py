@@ -43,6 +43,7 @@ class TrayIcon:
     def __init__(
         self,
         *,
+        is_hidden: Callable[[], bool],
         on_toggle: Callable[[], None],
         on_show: Callable[[], None],
         on_hide: Callable[[], None],
@@ -51,13 +52,21 @@ class TrayIcon:
     ) -> None:
         # A hidden "default" MenuItem makes left-clicks on the tray icon
         # invoke `on_toggle` without adding a redundant entry to the menu.
+        # Show/Hide are mutually exclusive — pystray re-evaluates the
+        # `visible` lambdas each time the menu pops up.
         menu = pystray.Menu(
             pystray.MenuItem(
                 "Toggle", lambda _icon, _item: on_toggle(),
                 default=True, visible=False,
             ),
-            pystray.MenuItem("Show", lambda _icon, _item: on_show()),
-            pystray.MenuItem("Hide", lambda _icon, _item: on_hide()),
+            pystray.MenuItem(
+                "Show", lambda _icon, _item: on_show(),
+                visible=lambda _item: is_hidden(),
+            ),
+            pystray.MenuItem(
+                "Hide", lambda _icon, _item: on_hide(),
+                visible=lambda _item: not is_hidden(),
+            ),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Settings…", lambda _icon, _item: on_settings()),
             pystray.MenuItem("Quit", lambda _icon, _item: on_quit()),
@@ -73,3 +82,13 @@ class TrayIcon:
     def stop(self) -> None:
         """Remove the tray icon."""
         self._icon.stop()
+
+    def refresh(self) -> None:
+        """Re-evaluate dynamic menu state (``visible`` / ``text`` callables).
+
+        On Windows the tray menu is a cached Win32 HMENU — pystray will
+        not pick up changes to ``visible`` lambdas until ``update_menu``
+        is called explicitly. Call this after any state change that
+        affects how the menu should render.
+        """
+        self._icon.update_menu()

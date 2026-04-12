@@ -154,3 +154,12 @@ cheap; pay it per category.
 from that thread. Never touch tk widgets directly from a menu callback —
 marshal back to the tk main thread via `root.after(0, fn)`. Same rule
 applies to any background thread in a tkinter app.
+
+### Tray integration: dynamic `visible` lambdas need `update_menu()` on Windows
+pystray's `MenuItem(..., visible=lambda: ...)` is only re-evaluated when
+`Icon.update_menu()` is called — on the Windows backend the menu is a
+cached Win32 HMENU, so without `update_menu()` the right-click shows
+whatever state the menu was in when it was last rebuilt. Any state change
+that affects a dynamic `visible` / `text` / `enabled` / `checked`
+predicate must be followed by `update_menu()`, or the UI lies about
+state. (Conditional Show/Hide tray entries hit this on first encounter.)
