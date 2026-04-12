@@ -20,6 +20,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from PIL import Image, ImageDraw, ImageTk
 from pynput.keyboard import Key, KeyCode, Listener
 
 from .keys import MODIFIER_KEYS, build_combo, keys_to_label, modifier_preview
@@ -65,7 +66,8 @@ class SettingsDialog:
     _FONT_B     = ("Segoe UI", 10, "bold")
     _FONT_TITLE = ("Segoe UI", 13, "bold")
 
-    _SWATCH_PX = 18  # colour-swatch diameter in pixels
+    _SWATCH_PX = 22  # colour-swatch diameter in pixels
+    _SWATCH_SS = 4   # supersampling factor for smooth circles
 
     # -- Construction --------------------------------------------------------
 
@@ -87,6 +89,8 @@ class SettingsDialog:
         self._capturing: int | None = None
         self._held_mods: set[Key] = set()
         self._listener: Listener | None = None
+        self._swatch_images: list[ImageTk.PhotoImage] = []  # prevent GC
+
 
         win = tk.Toplevel(parent)
         win.title("Spot Key \u2014 Settings")
@@ -119,6 +123,40 @@ class SettingsDialog:
             if c.lower() == lo:
                 return i
         return 0
+
+    def _make_delete_icon(self, color: str) -> ImageTk.PhotoImage:
+        """Render an antialiased x icon at the same height as swatches."""
+        s = self._SWATCH_PX
+        ss = self._SWATCH_SS
+        big = s * ss
+        img = Image.new("RGBA", (big, big), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        # Draw an X with thick rounded lines
+        margin = int(big * 0.25)
+        w = max(ss * 2, 4)
+        draw.line((margin, margin, big - margin, big - margin), fill=color, width=w)
+        draw.line((margin, big - margin, big - margin, margin), fill=color, width=w)
+        img = img.resize((s, s), Image.LANCZOS)
+        return ImageTk.PhotoImage(img)
+
+    def _make_swatch(self, color: str, selected: bool) -> ImageTk.PhotoImage:
+        """Render an antialiased circle swatch, optionally with a selection ring."""
+        s = self._SWATCH_PX
+        ss = self._SWATCH_SS
+        big = s * ss
+        img = Image.new("RGBA", (big, big), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        if selected:
+            # White selection ring then coloured fill inside
+            draw.ellipse((0, 0, big - 1, big - 1), fill="white")
+            inset = ss * 2
+            draw.ellipse((inset, inset, big - inset - 1, big - inset - 1), fill=color)
+        else:
+            inset = ss * 2
+            draw.ellipse((inset, inset, big - inset - 1, big - inset - 1), fill=color)
+        img = img.resize((s, s), Image.LANCZOS)
+        photo = ImageTk.PhotoImage(img)
+        return photo
 
     @staticmethod
     def _hoverable(widget: tk.Widget, normal: str, hover: str) -> None:
@@ -186,6 +224,7 @@ class SettingsDialog:
         """Tear down and rebuild every shortcut row."""
         for child in self._list_frame.winfo_children():
             child.destroy()
+        self._swatch_images = []
 
         if not self._items:
             tk.Label(
@@ -199,7 +238,7 @@ class SettingsDialog:
             self._build_row(idx)
 
     def _build_row(self, idx: int) -> None:
-        """Render one shortcut row: key button, colour swatches, delete."""
+        """Render one shortcut row: arrow buttons, key button, colour swatches, delete."""
         item = self._items[idx]
 
         card = tk.Frame(
@@ -207,8 +246,32 @@ class SettingsDialog:
             highlightbackground=self._BORDER, highlightthickness=1,
         )
         card.pack(fill="x", pady=(0, 6))
+
         inner = tk.Frame(card, bg=self._CARD)
-        inner.pack(fill="x", padx=10, pady=8)
+        inner.pack(fill="x", padx=10, pady=6)
+
+        # Reorder arrows (side-by-side so they don't add row height)
+        can_up = idx > 0
+        can_down = idx < len(self._items) - 1
+        arrow_font = ("Segoe UI", 7)
+        up_lbl = tk.Label(
+            inner, text="\u25B2", font=arrow_font,
+            bg=self._CARD, fg=self._DIM if can_up else "#444",
+            cursor="hand2" if can_up else "arrow",
+        )
+        up_lbl.pack(side="left", padx=(0, 1))
+        if can_up:
+            up_lbl.bind("<Button-1>", lambda _, i=idx: self._move(i, -1))
+            self._hoverable(up_lbl, self._CARD, self._BTN)
+        down_lbl = tk.Label(
+            inner, text="\u25BC", font=arrow_font,
+            bg=self._CARD, fg=self._DIM if can_down else "#444",
+            cursor="hand2" if can_down else "arrow",
+        )
+        down_lbl.pack(side="left", padx=(0, 6))
+        if can_down:
+            down_lbl.bind("<Button-1>", lambda _, i=idx: self._move(i, 1))
+            self._hoverable(down_lbl, self._CARD, self._BTN)
 
         # Key-combo button — click to re-record
         btn = tk.Button(
@@ -222,34 +285,47 @@ class SettingsDialog:
         self._hoverable(btn, self._BTN, self._BTN_HV)
         item.btn = btn
 
-        # Delete button (visually disabled when only one shortcut remains)
+        # Delete icon (PIL-rendered × at same height as swatches for alignment)
         is_sole = len(self._items) == 1
-        del_fg = "#555" if is_sole else self._DIM
-        tk.Button(
-            inner, text="\u00d7", font=("Segoe UI", 14),
-            bg=self._CARD, fg=del_fg,
-            activebackground=self._CARD,
-            activeforeground="#555" if is_sole else "#EF4444",
-            bd=0, padx=4,
+        del_color = "#555" if is_sole else self._DIM
+        del_img = self._make_delete_icon(del_color)
+        self._swatch_images.append(del_img)
+        del_lbl = tk.Label(
+            inner, image=del_img, bg=self._CARD, bd=0,
             cursor="arrow" if is_sole else "hand2",
-            command=(lambda: None) if is_sole else (lambda i=idx: self._remove(i)),
-        ).pack(side="right")
+        )
+        del_lbl.pack(side="right", padx=(4, 0), pady=(1, 0))
+        if not is_sole:
+            del_img_hover = self._make_delete_icon("#EF4444")
+            self._swatch_images.append(del_img_hover)
+            del_lbl.bind("<Button-1>", lambda _, i=idx: self._remove(i))
+            del_lbl.bind("<Enter>", lambda _, w=del_lbl, hi=del_img_hover: w.configure(image=hi))
+            del_lbl.bind("<Leave>", lambda _, w=del_lbl, ni=del_img: w.configure(image=ni))
 
-        # Colour swatches
+        # Colour swatches (PIL-rendered for smooth antialiased circles)
         swatch_frame = tk.Frame(inner, bg=self._CARD)
-        swatch_frame.pack(side="right", padx=(12, 8))
+        swatch_frame.pack(side="right", padx=(12, 8), pady=(1, 0))
         s = self._SWATCH_PX
         for ci, (color, _, _) in enumerate(COLOR_PALETTE):
-            canvas = tk.Canvas(
-                swatch_frame, width=s, height=s, bg=self._CARD,
-                highlightthickness=0, cursor="hand2",
+            photo = self._make_swatch(color, selected=(ci == item.color_idx))
+            self._swatch_images.append(photo)
+            lbl = tk.Label(
+                swatch_frame, image=photo, bg=self._CARD,
+                cursor="hand2", bd=0,
             )
-            if ci == item.color_idx:
-                canvas.create_oval(1, 1, s - 1, s - 1, fill=color, outline="#FFF", width=2)
-            else:
-                canvas.create_oval(3, 3, s - 3, s - 3, fill=color, outline="")
-            canvas.bind("<Button-1>", lambda _, i=idx, c=ci: self._pick_color(i, c))
-            canvas.pack(side="left", padx=1)
+            lbl.bind("<Button-1>", lambda _, i=idx, c=ci: self._pick_color(i, c))
+            lbl.pack(side="left", padx=1)
+
+    # -- Reorder -------------------------------------------------------------
+
+    def _move(self, idx: int, direction: int) -> None:
+        """Swap shortcut at *idx* with its neighbour in *direction* (-1/+1)."""
+        target = idx + direction
+        if target < 0 or target >= len(self._items):
+            return
+        self._capture_cancel()
+        self._items[idx], self._items[target] = self._items[target], self._items[idx]
+        self._refresh_rows()
 
     # -- Key capture (pynput low-level hook) ---------------------------------
 
