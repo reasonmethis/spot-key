@@ -31,16 +31,13 @@ from .models import COLOR_PALETTE, Shortcut
 # Win32 helpers for flicker-free widget rebuilds. LockWindowUpdate suspends
 # drawing to the given HWND (and its descendants); passing 0 unlocks and
 # forces a single repaint of the accumulated invalidated region.
+_GA_ROOT = 2
 if sys.platform == "win32":
-    _user32 = ctypes.windll.user32
-    _LockWindowUpdate = _user32.LockWindowUpdate
-    _GetAncestor = _user32.GetAncestor
-    _GA_ROOT = 2
+    _LockWindowUpdate = ctypes.windll.user32.LockWindowUpdate
+    _GetAncestor = ctypes.windll.user32.GetAncestor
 else:
-    _user32 = None
     _LockWindowUpdate = None
     _GetAncestor = None
-    _GA_ROOT = 2
 
 # ---------------------------------------------------------------------------
 # Mutable working copy of a shortcut used during editing
@@ -109,7 +106,6 @@ class SettingsDialog:
         self._listener: Listener | None = None
         self._swatch_images: list[ImageTk.PhotoImage] = []  # prevent GC
 
-
         win = tk.Toplevel(parent)
         win.title("Spot Key \u2014 Settings")
         win.configure(bg=self._BG)
@@ -165,16 +161,13 @@ class SettingsDialog:
         img = Image.new("RGBA", (big, big), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
         if selected:
-            # White selection ring then coloured fill inside
             draw.ellipse((0, 0, big - 1, big - 1), fill="white")
-            inset = ss * 2
-            draw.ellipse((inset, inset, big - inset - 1, big - inset - 1), fill=color)
-        else:
-            inset = ss * 2
-            draw.ellipse((inset, inset, big - inset - 1, big - inset - 1), fill=color)
+        inset = ss * 2
+        draw.ellipse(
+            (inset, inset, big - inset - 1, big - inset - 1), fill=color,
+        )
         img = img.resize((s, s), Image.LANCZOS)
-        photo = ImageTk.PhotoImage(img)
-        return photo
+        return ImageTk.PhotoImage(img)
 
     @staticmethod
     def _hoverable(widget: tk.Widget, normal: str, hover: str) -> None:
