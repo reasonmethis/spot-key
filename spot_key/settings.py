@@ -39,6 +39,8 @@ class _ShortcutItem:
     label: str
     color_idx: int
     btn: tk.Button | None = field(default=None, repr=False)
+    swatch_labels: list[tk.Label] = field(default_factory=list, repr=False)
+    swatch_images: list[ImageTk.PhotoImage] = field(default_factory=list, repr=False)
 
 
 # ---------------------------------------------------------------------------
@@ -175,8 +177,10 @@ class SettingsDialog:
             bg=self._BG, fg=self._FG,
         ).pack(anchor="w", padx=pad, pady=(pad, 8))
 
-        self._list_frame = tk.Frame(win, bg=self._BG)
-        self._list_frame.pack(fill="x", padx=pad)
+        self._list_container = tk.Frame(win, bg=self._BG)
+        self._list_container.pack(fill="x", padx=pad)
+        self._list_frame = tk.Frame(self._list_container, bg=self._BG)
+        self._list_frame.pack(fill="x")
         self._refresh_rows()
 
         # "+ Add Shortcut" button
@@ -221,21 +225,25 @@ class SettingsDialog:
     # -- Row rendering -------------------------------------------------------
 
     def _refresh_rows(self) -> None:
-        """Tear down and rebuild every shortcut row."""
-        for child in self._list_frame.winfo_children():
-            child.destroy()
+        """Rebuild shortcut rows flicker-free by building into a new frame first."""
+        old_frame = self._list_frame
+        new_frame = tk.Frame(self._list_container, bg=self._BG)
+        self._list_frame = new_frame
         self._swatch_images = []
 
         if not self._items:
             tk.Label(
-                self._list_frame,
+                new_frame,
                 text="No shortcuts \u2014 click + Add Shortcut",
                 font=self._FONT, bg=self._BG, fg=self._DIM,
             ).pack(pady=20)
-            return
+        else:
+            for idx in range(len(self._items)):
+                self._build_row(idx)
 
-        for idx in range(len(self._items)):
-            self._build_row(idx)
+        # Atomic swap: show new, destroy old
+        new_frame.pack(fill="x")
+        old_frame.destroy()
 
     def _build_row(self, idx: int) -> None:
         """Render one shortcut row: arrow buttons, key button, colour swatches, delete."""
@@ -305,16 +313,19 @@ class SettingsDialog:
         # Colour swatches (PIL-rendered for smooth antialiased circles)
         swatch_frame = tk.Frame(inner, bg=self._CARD)
         swatch_frame.pack(side="right", padx=(12, 8), pady=(1, 0))
-        s = self._SWATCH_PX
+        item.swatch_labels = []
+        item.swatch_images = []
         for ci, (color, _, _) in enumerate(COLOR_PALETTE):
             photo = self._make_swatch(color, selected=(ci == item.color_idx))
             self._swatch_images.append(photo)
+            item.swatch_images.append(photo)
             lbl = tk.Label(
                 swatch_frame, image=photo, bg=self._CARD,
                 cursor="hand2", bd=0,
             )
             lbl.bind("<Button-1>", lambda _, i=idx, c=ci: self._pick_color(i, c))
             lbl.pack(side="left", padx=1)
+            item.swatch_labels.append(lbl)
 
     # -- Reorder -------------------------------------------------------------
 
@@ -409,9 +420,15 @@ class SettingsDialog:
     # -- List mutations ------------------------------------------------------
 
     def _pick_color(self, idx: int, color_idx: int) -> None:
-        """Change the colour of shortcut *idx* and redraw."""
-        self._items[idx].color_idx = color_idx
-        self._refresh_rows()
+        """Change the colour of shortcut *idx*, updating swatches in-place."""
+        item = self._items[idx]
+        item.color_idx = color_idx
+        # Update swatch images without rebuilding
+        for ci, (color, _, _) in enumerate(COLOR_PALETTE):
+            photo = self._make_swatch(color, selected=(ci == color_idx))
+            item.swatch_images[ci] = photo
+            self._swatch_images.append(photo)  # prevent GC
+            item.swatch_labels[ci].configure(image=photo)
 
     def _add(self) -> None:
         """Append a new shortcut and immediately start capturing its key combo."""
