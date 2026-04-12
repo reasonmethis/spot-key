@@ -15,6 +15,8 @@ instead of tkinter's ``<KeyPress>`` events.  This is necessary because:
 
 from __future__ import annotations
 
+import ctypes
+import sys
 import tkinter as tk
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -25,6 +27,20 @@ from pynput.keyboard import Key, KeyCode, Listener
 
 from .keys import MODIFIER_KEYS, build_combo, keys_to_label, modifier_preview
 from .models import COLOR_PALETTE, Shortcut
+
+# Win32 helpers for flicker-free widget rebuilds. LockWindowUpdate suspends
+# drawing to the given HWND (and its descendants); passing 0 unlocks and
+# forces a single repaint of the accumulated invalidated region.
+if sys.platform == "win32":
+    _user32 = ctypes.windll.user32
+    _LockWindowUpdate = _user32.LockWindowUpdate
+    _GetAncestor = _user32.GetAncestor
+    _GA_ROOT = 2
+else:
+    _user32 = None
+    _LockWindowUpdate = None
+    _GetAncestor = None
+    _GA_ROOT = 2
 
 # ---------------------------------------------------------------------------
 # Mutable working copy of a shortcut used during editing
@@ -38,7 +54,7 @@ class _ShortcutItem:
     keys: tuple[Key | str, ...]
     label: str
     color_idx: int
-    btn: tk.Button | None = field(default=None, repr=False)
+    btn: tk.Label | None = field(default=None, repr=False)
     swatch_labels: list[tk.Label] = field(default_factory=list, repr=False)
     swatch_images: list[ImageTk.PhotoImage] = field(default_factory=list, repr=False)
 
@@ -177,10 +193,8 @@ class SettingsDialog:
             bg=self._BG, fg=self._FG,
         ).pack(anchor="w", padx=pad, pady=(pad, 8))
 
-        self._list_container = tk.Frame(win, bg=self._BG)
-        self._list_container.pack(fill="x", padx=pad)
-        self._list_frame = tk.Frame(self._list_container, bg=self._BG)
-        self._list_frame.pack(fill="x")
+        self._list_frame = tk.Frame(win, bg=self._BG)
+        self._list_frame.pack(fill="x", padx=pad)
         self._refresh_rows()
 
         # "+ Add Shortcut" button
@@ -225,25 +239,68 @@ class SettingsDialog:
     # -- Row rendering -------------------------------------------------------
 
     def _refresh_rows(self) -> None:
-        """Rebuild shortcut rows flicker-free by building into a new frame first."""
-        old_frame = self._list_frame
-        new_frame = tk.Frame(self._list_container, bg=self._BG)
-        self._list_frame = new_frame
-        self._swatch_images = []
+        """Rebuild shortcut rows without flicker.
 
-        if not self._items:
-            tk.Label(
-                new_frame,
-                text="No shortcuts \u2014 click + Add Shortcut",
-                font=self._FONT, bg=self._BG, fg=self._DIM,
-            ).pack(pady=20)
-        else:
-            for idx in range(len(self._items)):
-                self._build_row(idx)
+        Past flicker had two causes: the list frame briefly shrinking
+        (triggering a Toplevel auto-resize that exposed the desktop), and
+        the list area painting empty between destroying old rows and
+        packing new ones.
 
-        # Atomic swap: show new, destroy old
-        new_frame.pack(fill="x")
-        old_frame.destroy()
+        Fix: pin the frame's size with ``pack_propagate(False)`` so it
+        cannot shrink, and use Win32 ``LockWindowUpdate`` on the Toplevel
+        HWND to suspend all drawing while children are destroyed and
+        rebuilt. When the lock is released, Windows repaints the entire
+        invalidated area in a single frame, so the user never sees an
+        in-between state.
+        """
+        frame = self._list_frame
+
+        # Measure current rendered size so we can pin the frame during the
+        # rebuild. winfo_width/height are only valid after the frame has
+        # been laid out at least once — on the very first build they'll
+        # be 1, in which case we skip pinning.
+        frame.update_idletasks()
+        cur_w = frame.winfo_width()
+        cur_h = frame.winfo_height()
+        pinned = cur_w > 1 and cur_h > 1
+        if pinned:
+            frame.configure(width=cur_w, height=cur_h)
+            frame.pack_propagate(False)
+
+        # Suspend drawing on the whole Toplevel (the ancestor HWND, not
+        # tk's inner widget HWND). Only one window system-wide may hold a
+        # draw lock at a time, so the try/finally is important.
+        locked_hwnd = 0
+        if _LockWindowUpdate is not None:
+            inner_hwnd = frame.winfo_id()
+            root_hwnd = _GetAncestor(inner_hwnd, _GA_ROOT)
+            if root_hwnd and _LockWindowUpdate(root_hwnd):
+                locked_hwnd = root_hwnd
+
+        try:
+            for child in frame.winfo_children():
+                child.destroy()
+            self._swatch_images = []
+
+            if not self._items:
+                tk.Label(
+                    frame,
+                    text="No shortcuts \u2014 click + Add Shortcut",
+                    font=self._FONT, bg=self._BG, fg=self._DIM,
+                ).pack(pady=20)
+            else:
+                for idx in range(len(self._items)):
+                    self._build_row(idx)
+
+            # Flush tk's pending geometry work while the window is still
+            # locked so the eventual repaint has the final layout.
+            frame.update_idletasks()
+        finally:
+            if locked_hwnd:
+                _LockWindowUpdate(0)
+
+        if pinned:
+            frame.pack_propagate(True)
 
     def _build_row(self, idx: int) -> None:
         """Render one shortcut row: arrow buttons, key button, colour swatches, delete."""
@@ -281,15 +338,18 @@ class SettingsDialog:
             down_lbl.bind("<Button-1>", lambda _, i=idx: self._move(i, 1))
             self._hoverable(down_lbl, self._CARD, self._BTN)
 
-        # Key-combo button — click to re-record
-        btn = tk.Button(
+        # Key-combo button — a Label styled as a button (tk.Button creates a
+        # native Win32 BUTTON control which flashes with the system theme
+        # colour for one frame during rebuild, whereas Label paints directly
+        # with our bg from the first frame).
+        btn = tk.Label(
             inner, text=item.label, font=self._FONT_B,
             bg=self._BTN, fg=self._FG,
-            activebackground=self._BTN_HV, activeforeground=self._FG,
-            bd=0, padx=12, pady=4, cursor="hand2", width=14, anchor="w",
-            command=lambda i=idx: self._capture_start(i),
+            padx=12, pady=4, cursor="hand2", width=14, anchor="w",
+            bd=0,
         )
         btn.pack(side="left")
+        btn.bind("<Button-1>", lambda _, i=idx: self._capture_start(i))
         self._hoverable(btn, self._BTN, self._BTN_HV)
         item.btn = btn
 
