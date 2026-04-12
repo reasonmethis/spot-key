@@ -7,6 +7,7 @@ dependencies = [
     "numpy>=2.4.4",
     "pillow>=10",
     "pynput>=1.8",
+    "pystray>=0.19.5",
 ]
 
 [project.scripts]

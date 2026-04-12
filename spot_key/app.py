@@ -13,6 +13,7 @@ from pynput.keyboard import Controller, Key
 from .models import Config, Shortcut, SUPERSAMPLE
 from .persistence import load_shortcuts, save_shortcuts
 from .settings import SettingsDialog
+from .tray import TrayIcon
 from .win32 import make_layered, update_layered_window
 
 
@@ -52,12 +53,24 @@ class SpotKey:
         self._drag_origin = (0, 0)
         self._click_origin = (0, 0)
 
+        self._hidden = False
+
         # Build the UI ---------------------------------------------------------
         self.root = self._build_window()
         self.canvas = self._build_canvas()
         self._menu = self._build_context_menu()
         self._render_pie()
         self._bind_events()
+
+        # Tray icon — runs on a background thread, marshals back via after().
+        self._tray = TrayIcon(
+            on_toggle=lambda: self.root.after(0, self._toggle_visibility),
+            on_show=lambda: self.root.after(0, self._show),
+            on_hide=lambda: self.root.after(0, self._hide),
+            on_settings=lambda: self.root.after(0, self._open_settings),
+            on_quit=lambda: self.root.after(0, self._quit),
+        )
+        self._tray.start()
 
     # ── Window construction ─────────────────────────────────────────────────
 
@@ -90,6 +103,7 @@ class SpotKey:
         """Create the right-click / hamburger context menu."""
         menu = tk.Menu(self.root, tearoff=0)
         menu.add_command(label="Settings...", command=self._open_settings)
+        menu.add_command(label="Hide to tray", command=self._hide)
         menu.add_separator()
         menu.add_command(label="Quit", command=self._quit)
         return menu
@@ -197,8 +211,7 @@ class SpotKey:
         self._in_menu_zone = True
         self._menu_zone_hover = True
         self._cancel_shortcut_timer()
-        if self._active_index is not None:
-            self._active_index = None
+        self._active_index = None
         self._render_pie()
 
     def _leave_menu_zone(self) -> None:
@@ -224,7 +237,32 @@ class SpotKey:
         self._render_pie()
         save_shortcuts(shortcuts)
 
+    def _hide(self) -> None:
+        """Hide the overlay. The tray icon remains the way back."""
+        if self._hidden:
+            return
+        self._cancel_shortcut_timer()
+        self._active_index = None
+        self._pending_index = None
+        self.root.withdraw()
+        self._hidden = True
+
+    def _show(self) -> None:
+        """Restore the overlay and re-assert topmost on top of other windows."""
+        if not self._hidden:
+            return
+        self.root.deiconify()
+        self.root.attributes("-topmost", True)
+        self._hidden = False
+
+    def _toggle_visibility(self) -> None:
+        if self._hidden:
+            self._show()
+        else:
+            self._hide()
+
     def _quit(self) -> None:
+        self._tray.stop()
         self.root.destroy()
 
     # ── Hover / shortcut triggering ─────────────────────────────────────────
