@@ -33,7 +33,7 @@ import numpy as np
 from PIL import Image
 from pynput.keyboard import Key
 
-from spot_key.models import COLOR_PALETTE, Shortcut
+from spot_key.models import COLOR_PALETTE, KeyComboAction, Shortcut
 from spot_key.settings import SettingsDialog, _ShortcutItem
 
 
@@ -117,8 +117,12 @@ def run_flicker_test(label: str, delay_in_rebuild: float = 0.0,
     root.withdraw()
 
     shortcuts = tuple(
-        Shortcut(label=l, keys=k,
-                 color=COLOR_PALETTE[i][0], hover_color=COLOR_PALETTE[i][1])
+        Shortcut(
+            label=l,
+            actions=(KeyComboAction(keys=k),),
+            color=COLOR_PALETTE[i][0],
+            hover_color=COLOR_PALETTE[i][1],
+        )
         for i, (l, k) in enumerate([
             ("Ctrl+C", (Key.ctrl_l, "c")),
             ("Ctrl+V", (Key.ctrl_l, "v")),
@@ -184,8 +188,10 @@ def run_flicker_test(label: str, delay_in_rebuild: float = 0.0,
         elif operation == "remove":
             dialog._remove(1)
         elif operation == "add":
-            new = _ShortcutItem(label="New", keys=(),
-                                color_idx=len(dialog._items) % 8)
+            new = _ShortcutItem(
+                actions=[KeyComboAction(keys=(Key.enter,))],
+                color_idx=len(dialog._items) % 8,
+            )
             dialog._items.append(new)
             dialog._refresh_rows()
         dialog._win.update()

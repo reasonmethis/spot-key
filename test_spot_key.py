@@ -8,6 +8,7 @@ import pytest
 from pynput.keyboard import Key
 
 from spot_key import SpotKey, Config, Shortcut
+from spot_key.models import KeyComboAction
 
 
 @pytest.fixture
@@ -20,12 +21,21 @@ def app(cfg):
     """SpotKey with a mocked keyboard controller."""
     kb = MagicMock()
     instance = SpotKey(cfg=cfg, keyboard=kb)
+    # Run action sequences synchronously in tests so assertions can
+    # inspect keyboard calls immediately after _fire_shortcut.
+    instance._run_actions = instance._run_actions_sync
     instance.root.update_idletasks()
     yield instance
     try:
         instance.root.destroy()
     except tk.TclError:
         pass
+
+
+def _combo_keys(sc: Shortcut) -> tuple:
+    """Return the keys of a single-key-combo shortcut's first action."""
+    assert isinstance(sc.actions[0], KeyComboAction)
+    return sc.actions[0].keys
 
 
 def _event(**kwargs: object) -> MagicMock:
@@ -66,8 +76,7 @@ class TestShortcutTrigger:
         mid = cfg.diameter // 2
         app._on_motion(_event(x=mid, y=5))
         app._fire_shortcut(0)
-        sc = cfg.shortcuts[0]
-        for k in sc.keys:
+        for k in _combo_keys(cfg.shortcuts[0]):
             app.keyboard.press.assert_any_call(k)
             app.keyboard.release.assert_any_call(k)
 
@@ -84,8 +93,7 @@ class TestShortcutTrigger:
         app._on_motion(_event(x=mid, y=5))
         app._on_motion(_event(x=mid + 20, y=mid + 15))
         app._fire_shortcut(1)
-        sc = cfg.shortcuts[1]
-        for k in sc.keys:
+        for k in _combo_keys(cfg.shortcuts[1]):
             app.keyboard.press.assert_any_call(k)
 
     def test_leave_cancels_pending_shortcut(self, app, cfg):
@@ -102,17 +110,16 @@ class TestShortcutTrigger:
         app._on_leave(_event())
         app._on_motion(_event(x=mid, y=5))
         app._fire_shortcut(0)
-        sc = cfg.shortcuts[0]
-        for k in sc.keys:
+        for k in _combo_keys(cfg.shortcuts[0]):
             app.keyboard.press.assert_any_call(k)
 
     def test_key_press_and_release_order(self, app, cfg):
         mid = cfg.diameter // 2
         app._on_motion(_event(x=mid, y=5))
         app._fire_shortcut(0)
-        sc = cfg.shortcuts[0]
-        assert app.keyboard.press.call_args_list == [call(k) for k in sc.keys]
-        assert app.keyboard.release.call_args_list == [call(k) for k in reversed(sc.keys)]
+        keys = _combo_keys(cfg.shortcuts[0])
+        assert app.keyboard.press.call_args_list == [call(k) for k in keys]
+        assert app.keyboard.release.call_args_list == [call(k) for k in reversed(keys)]
 
 
 class TestVisualFeedback:
@@ -197,7 +204,7 @@ class TestDragging:
 class TestPieConstruction:
     def test_single_shortcut_full_circle(self):
         one = Config(shortcuts=(
-            Shortcut("Test", (Key.enter,), "#AAA", "#BBB"),
+            Shortcut("Test", (KeyComboAction(keys=(Key.enter,)),), "#AAA", "#BBB"),
         ))
         kb = MagicMock()
         app = SpotKey(cfg=one, keyboard=kb)

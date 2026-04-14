@@ -3,14 +3,25 @@
 from __future__ import annotations
 
 import math
+import threading
+import time
 import tkinter as tk
 from dataclasses import replace
 from typing import Any
 
 from PIL import Image, ImageDraw
-from pynput.keyboard import Controller, Key
+from pynput.keyboard import Controller
+from pynput.mouse import Button, Controller as MouseController
 
-from .models import Config, Shortcut, SUPERSAMPLE
+from .models import (
+    Action,
+    Config,
+    KeyComboAction,
+    MouseClickAction,
+    Shortcut,
+    SleepAction,
+    SUPERSAMPLE,
+)
 from .persistence import SavedState, load_state, save_state
 from .settings import SettingsDialog
 from .tray import TrayIcon
@@ -40,6 +51,7 @@ class SpotKey:
     ) -> None:
         self.cfg = cfg or Config()
         self.keyboard = keyboard or Controller()
+        self.mouse = MouseController()
         self._initial_position = initial_position
 
         # Shortcut hover state -------------------------------------------------
@@ -357,14 +369,14 @@ class SpotKey:
             )
 
     def _fire_shortcut(self, idx: int) -> None:
-        """Dwell timer callback: send the keystroke and highlight the slice."""
+        """Dwell timer callback: run the action sequence and highlight the slice."""
         self._shortcut_timer = None
         if self._pending_index != idx:
             return
         self._active_index = idx
         self._pending_index = None
         self._render_pie(highlight=idx)
-        self._send_keys(self.cfg.shortcuts[idx].keys)
+        self._run_actions(self.cfg.shortcuts[idx].actions)
 
     def _on_leave(self, _event: tk.Event[Any]) -> None:
         """Cursor left the widget — cancel everything."""
@@ -420,14 +432,34 @@ class SpotKey:
             position=(self.root.winfo_x(), self.root.winfo_y()),
         ))
 
-    # ── Key sending ─────────────────────────────────────────────────────────
+    # ── Action execution ────────────────────────────────────────────────────
 
-    def _send_keys(self, keys: tuple[Key | str, ...]) -> None:
-        """Press each key in order, then release in reverse (LIFO)."""
-        for k in keys:
-            self.keyboard.press(k)
-        for k in reversed(keys):
-            self.keyboard.release(k)
+    def _run_actions(self, actions: tuple[Action, ...]) -> None:
+        """Execute *actions* in order on a background thread.
+
+        A background thread is essential because sleep actions would
+        otherwise freeze the tkinter main loop (and with it the overlay,
+        its tray icon, and all mouse handling). pynput's keyboard and
+        mouse controllers are thread-safe, so firing input events off
+        the UI thread is fine.
+        """
+        threading.Thread(
+            target=self._run_actions_sync, args=(actions,), daemon=True,
+        ).start()
+
+    def _run_actions_sync(self, actions: tuple[Action, ...]) -> None:
+        """Synchronously execute an action sequence. Runs on a worker thread."""
+        for action in actions:
+            if isinstance(action, KeyComboAction):
+                for k in action.keys:
+                    self.keyboard.press(k)
+                for k in reversed(action.keys):
+                    self.keyboard.release(k)
+            elif isinstance(action, SleepAction):
+                time.sleep(action.seconds)
+            elif isinstance(action, MouseClickAction):
+                self.mouse.position = (action.x, action.y)
+                self.mouse.click(Button.left)
 
     # ── Main loop ───────────────────────────────────────────────────────────
 

@@ -23,34 +23,70 @@ COLOR_PALETTE: tuple[tuple[str, str, str], ...] = (
 )
 
 # ---------------------------------------------------------------------------
-# Core data models
+# Actions — the atomic operations that make up a shortcut sequence
 # ---------------------------------------------------------------------------
 
 SUPERSAMPLE = 4  # Render at Nx resolution, downsample for smooth edges.
 
 
 @dataclass(frozen=True)
+class KeyComboAction:
+    """Press a set of keys in order, then release them in reverse."""
+
+    keys: tuple[Key | str, ...]
+
+
+@dataclass(frozen=True)
+class SleepAction:
+    """Pause the sequence for a fixed number of seconds."""
+
+    seconds: float
+
+
+@dataclass(frozen=True)
+class MouseClickAction:
+    """Move the mouse to an absolute screen coordinate and left-click."""
+
+    x: int
+    y: int
+
+
+Action = KeyComboAction | SleepAction | MouseClickAction
+
+
+# ---------------------------------------------------------------------------
+# Core data models
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
 class Shortcut:
-    """A single pie-chart segment: its key combination and display colours.
+    """A single pie-chart segment: its action sequence and display colours.
 
     Attributes:
-        label:       Human-readable name shown in the UI (e.g. ``"Ctrl+Q"``).
-        keys:        Sequence of pynput ``Key`` enums and/or single-char
-                     strings that are pressed in order and released in reverse.
+        label:       Human-readable summary shown in the UI (e.g. ``"Ctrl+Q"``
+                     or ``"Ctrl+C \u2192 Sleep 0.5s \u2192 Ctrl+V"``).
+        actions:     Ordered sequence of actions to execute when the slice
+                     fires. May be a single key combo (the common case) or
+                     any mix of key combos, sleeps, and mouse clicks.
         color:       Hex colour for the slice at rest.
         hover_color: Hex colour shown when the shortcut fires.
     """
 
     label: str
-    keys: tuple[Key | str, ...]
+    actions: tuple[Action, ...]
     color: str
     hover_color: str
 
 
+def _kc(*keys: Key | str) -> KeyComboAction:
+    return KeyComboAction(keys=tuple(keys))
+
+
 _DEFAULT_SHORTCUTS: tuple[Shortcut, ...] = (
-    Shortcut("Ctrl+Q", (Key.ctrl_l, "q"), "#4A90D9", "#2563EB"),
-    Shortcut("Ctrl+C", (Key.ctrl_l, "c"), "#10B981", "#059669"),
-    Shortcut("Enter",  (Key.enter,),      "#F59E0B", "#D97706"),
+    Shortcut("Ctrl+Q", (_kc(Key.ctrl_l, "q"),), "#4A90D9", "#2563EB"),
+    Shortcut("Ctrl+C", (_kc(Key.ctrl_l, "c"),), "#10B981", "#059669"),
+    Shortcut("Enter",  (_kc(Key.enter),),       "#F59E0B", "#D97706"),
 )
 
 

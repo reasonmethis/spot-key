@@ -1,7 +1,10 @@
 """Settings dialog for editing keyboard shortcuts.
 
 Opens as a dark-themed ``tk.Toplevel`` with a list of shortcut rows.  Each
-row has a key-capture button, colour swatches, and a delete button.
+row has a button (showing a summary of the action sequence), colour
+swatches, and a delete button. Clicking the summary button opens a
+sub-dialog where the action sequence can be edited — adding key combos,
+sleeps, and mouse clicks, and reordering or removing them.
 
 Key capture uses pynput's low-level keyboard hook (``WH_KEYBOARD_LL``)
 instead of tkinter's ``<KeyPress>`` events.  This is necessary because:
@@ -25,8 +28,21 @@ from typing import Any
 from PIL import Image, ImageDraw, ImageTk
 from pynput.keyboard import Key, KeyCode, Listener
 
-from .keys import MODIFIER_KEYS, build_combo, keys_to_label, modifier_preview
-from .models import COLOR_PALETTE, Shortcut
+from .keys import (
+    MODIFIER_KEYS,
+    action_label,
+    actions_label,
+    build_combo,
+    modifier_preview,
+)
+from .models import (
+    Action,
+    COLOR_PALETTE,
+    KeyComboAction,
+    MouseClickAction,
+    Shortcut,
+    SleepAction,
+)
 
 # Win32 helpers for flicker-free widget rebuilds. LockWindowUpdate suspends
 # drawing to the given HWND (and its descendants); passing 0 unlocks and
@@ -48,12 +64,16 @@ else:
 class _ShortcutItem:
     """Transient editing state for one row in the settings dialog."""
 
-    keys: tuple[Key | str, ...]
-    label: str
+    actions: list[Action]
     color_idx: int
     btn: tk.Label | None = field(default=None, repr=False)
     swatch_labels: list[tk.Label] = field(default_factory=list, repr=False)
     swatch_images: list[ImageTk.PhotoImage] = field(default_factory=list, repr=False)
+
+    @property
+    def label(self) -> str:
+        """Human-readable summary of this shortcut's action sequence."""
+        return actions_label(tuple(self.actions))
 
 
 # ---------------------------------------------------------------------------
@@ -107,15 +127,11 @@ class SettingsDialog:
         self._original_diameter = diameter
         self._items = [
             _ShortcutItem(
-                keys=sc.keys,
-                label=sc.label,
+                actions=list(sc.actions),
                 color_idx=self._color_idx(sc.color),
             )
             for sc in shortcuts
         ]
-        self._capturing: int | None = None
-        self._held_mods: set[Key] = set()
-        self._listener: Listener | None = None
         self._swatch_images: list[ImageTk.PhotoImage] = []  # prevent GC
 
         win = tk.Toplevel(parent)
@@ -440,11 +456,11 @@ class SettingsDialog:
         btn = tk.Label(
             inner, text=item.label, font=self._FONT_B,
             bg=self._BTN, fg=self._FG,
-            padx=12, pady=4, cursor="hand2", width=14, anchor="w",
+            padx=12, pady=4, cursor="hand2", width=22, anchor="w",
             bd=0,
         )
         btn.pack(side="left")
-        btn.bind("<Button-1>", lambda _, i=idx: self._capture_start(i))
+        btn.bind("<Button-1>", lambda _, i=idx: self._edit_actions(i))
         self._hoverable(btn, self._BTN, self._BTN_HV)
         item.btn = btn
 
@@ -489,88 +505,26 @@ class SettingsDialog:
         target = idx + direction
         if target < 0 or target >= len(self._items):
             return
-        self._capture_cancel()
         self._items[idx], self._items[target] = self._items[target], self._items[idx]
         self._refresh_rows()
 
-    # -- Key capture (pynput low-level hook) ---------------------------------
+    # -- Action editing ------------------------------------------------------
 
-    def _capture_start(self, idx: int) -> None:
-        """Enter key-capture mode for the shortcut at *idx*."""
-        self._capture_cancel()
-        self._capturing = idx
-        self._held_mods = set()
-
-        btn = self._items[idx].btn
-        assert btn is not None
-        btn.configure(text="Press keys\u2026", bg=self._CAPTURE_BG)
-        btn.bind("<Enter>", lambda _: None)   # suppress hover while capturing
-        btn.bind("<Leave>", lambda _: None)
-
-        self._listener = Listener(
-            on_press=self._on_hook_press,
-            on_release=self._on_hook_release,
+    def _edit_actions(self, idx: int) -> None:
+        """Open the action-sequence sub-dialog for shortcut *idx*."""
+        item = self._items[idx]
+        ActionSequenceDialog(
+            parent=self._win,
+            actions=list(item.actions),
+            on_apply=lambda new_actions: self._replace_actions(idx, new_actions),
         )
-        self._listener.start()
 
-    def _on_hook_press(self, key: Key | KeyCode) -> bool | None:
-        """Low-level key-down callback (runs on the listener thread)."""
-        if key in MODIFIER_KEYS:
-            self._held_mods.add(key)
-            self._win.after(0, self._update_mod_preview)
-            return None  # keep listening
-
-        if key == Key.esc:
-            self._win.after(0, self._capture_cancel)
-            return False  # stop listener
-
-        # Non-modifier → build the combo and accept it.
-        combo = build_combo(self._held_mods, key)
-        if combo:
-            self._win.after(0, self._finish_capture, combo)
-        return False  # stop listener
-
-    def _on_hook_release(self, key: Key | KeyCode) -> bool | None:
-        """Low-level key-up callback (runs on the listener thread)."""
-        if self._capturing is None:
-            return False
-        self._held_mods.discard(key)
-        self._win.after(0, self._update_mod_preview)
-        return None
-
-    def _update_mod_preview(self) -> None:
-        """Refresh the capture button to reflect currently-held modifiers."""
-        if self._capturing is None:
-            return
-        btn = self._items[self._capturing].btn
-        assert btn is not None
-        btn.configure(text=modifier_preview(self._held_mods))
-
-    def _finish_capture(self, keys: tuple[Key | str, ...]) -> None:
-        """Accept *keys* as the new shortcut and exit capture mode."""
-        if self._capturing is None:
-            return
-        item = self._items[self._capturing]
-        item.keys = keys
-        item.label = keys_to_label(keys)
-        assert item.btn is not None
-        item.btn.configure(text=item.label, bg=self._BTN)
-        self._hoverable(item.btn, self._BTN, self._BTN_HV)
-        self._capturing = None
-        self._held_mods = set()
-
-    def _capture_cancel(self) -> None:
-        """Exit capture mode without changing the shortcut."""
-        if self._capturing is None:
-            return
-        if self._listener is not None and self._listener.is_alive():
-            self._listener.stop()
-        item = self._items[self._capturing]
-        assert item.btn is not None
-        item.btn.configure(text=item.label, bg=self._BTN)
-        self._hoverable(item.btn, self._BTN, self._BTN_HV)
-        self._capturing = None
-        self._held_mods = set()
+    def _replace_actions(self, idx: int, actions: list[Action]) -> None:
+        """Commit an edited action sequence back to the shortcut at *idx*."""
+        self._items[idx].actions = actions
+        item = self._items[idx]
+        if item.btn is not None:
+            item.btn.configure(text=item.label)
 
     # -- List mutations ------------------------------------------------------
 
@@ -586,22 +540,22 @@ class SettingsDialog:
             item.swatch_labels[ci].configure(image=photo)
 
     def _add(self) -> None:
-        """Append a new shortcut and immediately start capturing its key combo."""
+        """Append a new shortcut and immediately open its action editor."""
         used = {item.color_idx for item in self._items}
         color_idx = next(
             (i for i in range(len(COLOR_PALETTE)) if i not in used), 0,
         )
         self._items.append(_ShortcutItem(
-            keys=(Key.enter,), label="Enter", color_idx=color_idx,
+            actions=[KeyComboAction(keys=(Key.enter,))],
+            color_idx=color_idx,
         ))
         self._refresh_rows()
-        self._capture_start(len(self._items) - 1)
+        self._edit_actions(len(self._items) - 1)
 
     def _remove(self, idx: int) -> None:
         """Remove shortcut *idx* (no-op if it's the last one)."""
         if len(self._items) <= 1:
             return
-        self._capture_cancel()
         self._items.pop(idx)
         self._refresh_rows()
 
@@ -609,11 +563,10 @@ class SettingsDialog:
 
     def _apply(self) -> None:
         """Build ``Shortcut`` objects from the edited items and invoke the callback."""
-        self._capture_cancel()
         shortcuts = tuple(
             Shortcut(
                 label=item.label,
-                keys=item.keys,
+                actions=tuple(item.actions),
                 color=COLOR_PALETTE[item.color_idx][0],
                 hover_color=COLOR_PALETTE[item.color_idx][1],
             )
@@ -624,7 +577,6 @@ class SettingsDialog:
 
     def _cancel(self) -> None:
         """Close without applying changes. Restore the original diameter."""
-        self._capture_cancel()
         if (
             self._on_preview_diameter is not None
             and self._diameter != self._original_diameter
@@ -633,8 +585,422 @@ class SettingsDialog:
         self._win.destroy()
 
     def _on_escape(self, _event: tk.Event[Any]) -> None:
-        """Escape cancels capture if active, otherwise closes the dialog."""
-        if self._capturing is not None:
+        """Escape closes the dialog without applying changes."""
+        self._cancel()
+
+
+# ---------------------------------------------------------------------------
+# Action sequence sub-dialog
+# ---------------------------------------------------------------------------
+
+
+class ActionSequenceDialog:
+    """Modal sub-dialog for editing a single shortcut's action sequence.
+
+    Shows an ordered list of actions (key combos, sleeps, mouse clicks)
+    that can be reordered or removed, plus an "Add" row with three
+    buttons. Clicking an Add button inserts a new action of that type
+    and — for key combos — immediately enters key-capture mode using the
+    same low-level pynput hook that the main settings dialog used to use.
+    """
+
+    _BG         = SettingsDialog._BG
+    _CARD       = SettingsDialog._CARD
+    _FG         = SettingsDialog._FG
+    _DIM        = SettingsDialog._DIM
+    _BORDER     = SettingsDialog._BORDER
+    _BTN        = SettingsDialog._BTN
+    _BTN_HV     = SettingsDialog._BTN_HV
+    _ACCENT     = SettingsDialog._ACCENT
+    _ACCENT_HV  = SettingsDialog._ACCENT_HV
+    _CAPTURE_BG = SettingsDialog._CAPTURE_BG
+
+    _FONT       = SettingsDialog._FONT
+    _FONT_B     = SettingsDialog._FONT_B
+    _FONT_TITLE = SettingsDialog._FONT_TITLE
+
+    def __init__(
+        self,
+        *,
+        parent: tk.Toplevel,
+        actions: list[Action],
+        on_apply: Callable[[list[Action]], None],
+    ) -> None:
+        self._actions = list(actions)
+        self._on_apply = on_apply
+
+        self._capturing = False
+        self._capture_btn: tk.Label | None = None
+        self._held_mods: set[Key] = set()
+        self._listener: Listener | None = None
+
+        win = tk.Toplevel(parent)
+        win.title("Edit Actions")
+        win.configure(bg=self._BG)
+        win.resizable(False, False)
+        win.attributes("-topmost", True)
+        self._win = win
+
+        self._list_frame: tk.Frame  # assigned in _build_layout
+        self._build_layout()
+
+        # Centre over the parent settings dialog.
+        win.update_idletasks()
+        px = parent.winfo_rootx()
+        py = parent.winfo_rooty()
+        pw = parent.winfo_width()
+        ph = parent.winfo_height()
+        x = px + pw // 2 - win.winfo_width() // 2
+        y = py + ph // 2 - win.winfo_height() // 2
+        win.geometry(f"+{max(0, x)}+{max(0, y)}")
+
+        win.transient(parent)
+        win.grab_set()
+        win.focus_set()
+        win.bind("<Escape>", self._on_escape)
+        win.protocol("WM_DELETE_WINDOW", self._cancel)
+
+    # -- Layout --------------------------------------------------------------
+
+    def _build_layout(self) -> None:
+        pad = 14
+        win = self._win
+
+        tk.Label(
+            win, text="Actions", font=self._FONT_TITLE,
+            bg=self._BG, fg=self._FG,
+        ).pack(anchor="w", padx=pad, pady=(pad, 6))
+
+        self._list_frame = tk.Frame(win, bg=self._BG)
+        self._list_frame.pack(fill="x", padx=pad)
+        self._refresh_list()
+
+        # "Add …" row
+        tk.Label(
+            win, text="Add action", font=self._FONT,
+            bg=self._BG, fg=self._DIM,
+        ).pack(anchor="w", padx=pad, pady=(12, 4))
+        add_frame = tk.Frame(win, bg=self._BG)
+        add_frame.pack(fill="x", padx=pad)
+
+        for label, handler in (
+            ("Key Combo", self._add_key_combo),
+            ("Sleep", self._add_sleep),
+            ("Mouse Click", self._add_mouse_click),
+        ):
+            btn = tk.Button(
+                add_frame, text=label, font=self._FONT,
+                bg=self._BTN, fg=self._FG,
+                activebackground=self._BTN_HV, activeforeground=self._FG,
+                bd=0, padx=12, pady=6, cursor="hand2", command=handler,
+            )
+            btn.pack(side="left", padx=(0, 6))
+            SettingsDialog._hoverable(btn, self._BTN, self._BTN_HV)
+
+        # Separator
+        tk.Frame(win, bg=self._BORDER, height=1).pack(
+            fill="x", padx=pad, pady=(pad, 0),
+        )
+
+        btn_frame = tk.Frame(win, bg=self._BG)
+        btn_frame.pack(fill="x", padx=pad, pady=pad)
+
+        cancel_btn = tk.Button(
+            btn_frame, text="Cancel", font=self._FONT,
+            bg=self._BTN, fg=self._FG,
+            activebackground=self._BTN_HV, activeforeground=self._FG,
+            bd=0, padx=20, pady=8, cursor="hand2", command=self._cancel,
+        )
+        cancel_btn.pack(side="right", padx=(8, 0))
+        SettingsDialog._hoverable(cancel_btn, self._BTN, self._BTN_HV)
+
+        ok_btn = tk.Button(
+            btn_frame, text="OK", font=self._FONT_B,
+            bg=self._ACCENT, fg="#FFF",
+            activebackground=self._ACCENT_HV, activeforeground="#FFF",
+            bd=0, padx=20, pady=8, cursor="hand2", command=self._apply,
+        )
+        ok_btn.pack(side="right")
+        SettingsDialog._hoverable(ok_btn, self._ACCENT, self._ACCENT_HV)
+
+    # -- Action list rendering -----------------------------------------------
+
+    def _refresh_list(self) -> None:
+        """Rebuild the action-row list from ``self._actions``."""
+        for child in self._list_frame.winfo_children():
+            child.destroy()
+
+        if not self._actions:
+            tk.Label(
+                self._list_frame,
+                text="No actions \u2014 use the buttons below to add one.",
+                font=self._FONT, bg=self._BG, fg=self._DIM,
+            ).pack(pady=10)
+            return
+
+        for idx in range(len(self._actions)):
+            self._build_action_row(idx)
+
+    def _build_action_row(self, idx: int) -> None:
+        """Render one row for the action at index *idx*."""
+        action = self._actions[idx]
+        card = tk.Frame(
+            self._list_frame, bg=self._CARD,
+            highlightbackground=self._BORDER, highlightthickness=1,
+        )
+        card.pack(fill="x", pady=(0, 4))
+
+        inner = tk.Frame(card, bg=self._CARD)
+        inner.pack(fill="x", padx=10, pady=6)
+
+        # Reorder arrows
+        can_up = idx > 0
+        can_down = idx < len(self._actions) - 1
+        arrow_font = ("Segoe UI", 7)
+        up_lbl = tk.Label(
+            inner, text="\u25B2", font=arrow_font,
+            bg=self._CARD, fg=self._DIM if can_up else "#444",
+            cursor="hand2" if can_up else "arrow",
+        )
+        up_lbl.pack(side="left", padx=(0, 1))
+        if can_up:
+            up_lbl.bind("<Button-1>", lambda _, i=idx: self._move(i, -1))
+        down_lbl = tk.Label(
+            inner, text="\u25BC", font=arrow_font,
+            bg=self._CARD, fg=self._DIM if can_down else "#444",
+            cursor="hand2" if can_down else "arrow",
+        )
+        down_lbl.pack(side="left", padx=(0, 8))
+        if can_down:
+            down_lbl.bind("<Button-1>", lambda _, i=idx: self._move(i, 1))
+
+        # Action label (clickable only if it's a key combo — opens capture)
+        is_key = isinstance(action, KeyComboAction)
+        is_sleep = isinstance(action, SleepAction)
+        is_click = isinstance(action, MouseClickAction)
+
+        if is_key:
+            lbl = tk.Label(
+                inner, text=action_label(action), font=self._FONT_B,
+                bg=self._BTN, fg=self._FG,
+                padx=10, pady=4, cursor="hand2", anchor="w", bd=0,
+            )
+            lbl.pack(side="left", fill="x", expand=True)
+            lbl.bind("<Button-1>", lambda _, i=idx: self._capture_start(i))
+            SettingsDialog._hoverable(lbl, self._BTN, self._BTN_HV)
+        elif is_sleep:
+            assert isinstance(action, SleepAction)
+            tk.Label(
+                inner, text="Sleep", font=self._FONT,
+                bg=self._CARD, fg=self._FG,
+            ).pack(side="left")
+            var = tk.StringVar(value=f"{action.seconds:g}")
+            entry = tk.Entry(
+                inner, textvariable=var, font=self._FONT, width=8,
+                bg=self._BG, fg=self._FG, insertbackground=self._FG,
+                bd=0, relief="flat", highlightthickness=1,
+                highlightbackground=self._BORDER, highlightcolor=self._ACCENT,
+            )
+            entry.pack(side="left", padx=(8, 4))
+            tk.Label(
+                inner, text="seconds", font=self._FONT,
+                bg=self._CARD, fg=self._DIM,
+            ).pack(side="left")
+            var.trace_add(
+                "write",
+                lambda *_, i=idx, v=var: self._update_sleep(i, v.get()),
+            )
+        elif is_click:
+            assert isinstance(action, MouseClickAction)
+            tk.Label(
+                inner, text="Click at", font=self._FONT,
+                bg=self._CARD, fg=self._FG,
+            ).pack(side="left")
+            x_var = tk.StringVar(value=str(action.x))
+            y_var = tk.StringVar(value=str(action.y))
+            for var, placeholder in ((x_var, "x"), (y_var, "y")):
+                tk.Label(
+                    inner, text=placeholder, font=self._FONT,
+                    bg=self._CARD, fg=self._DIM,
+                ).pack(side="left", padx=(8, 2))
+                entry = tk.Entry(
+                    inner, textvariable=var, font=self._FONT, width=6,
+                    bg=self._BG, fg=self._FG, insertbackground=self._FG,
+                    bd=0, relief="flat", highlightthickness=1,
+                    highlightbackground=self._BORDER,
+                    highlightcolor=self._ACCENT,
+                )
+                entry.pack(side="left")
+            x_var.trace_add(
+                "write",
+                lambda *_, i=idx, xv=x_var, yv=y_var:
+                self._update_click(i, xv.get(), yv.get()),
+            )
+            y_var.trace_add(
+                "write",
+                lambda *_, i=idx, xv=x_var, yv=y_var:
+                self._update_click(i, xv.get(), yv.get()),
+            )
+
+        # Remove button
+        rm_lbl = tk.Label(
+            inner, text="\u2715", font=self._FONT_B,
+            bg=self._CARD, fg=self._DIM, cursor="hand2",
+            padx=6,
+        )
+        rm_lbl.pack(side="right")
+        rm_lbl.bind("<Button-1>", lambda _, i=idx: self._remove(i))
+        rm_lbl.bind(
+            "<Enter>", lambda _, w=rm_lbl: w.configure(fg="#EF4444"),
+        )
+        rm_lbl.bind(
+            "<Leave>", lambda _, w=rm_lbl: w.configure(fg=self._DIM),
+        )
+
+    # -- Row mutations -------------------------------------------------------
+
+    def _move(self, idx: int, direction: int) -> None:
+        target = idx + direction
+        if target < 0 or target >= len(self._actions):
+            return
+        self._capture_cancel()
+        self._actions[idx], self._actions[target] = (
+            self._actions[target], self._actions[idx],
+        )
+        self._refresh_list()
+
+    def _remove(self, idx: int) -> None:
+        self._capture_cancel()
+        self._actions.pop(idx)
+        self._refresh_list()
+
+    def _update_sleep(self, idx: int, text: str) -> None:
+        try:
+            seconds = float(text)
+        except ValueError:
+            return
+        if seconds < 0:
+            return
+        self._actions[idx] = SleepAction(seconds=seconds)
+
+    def _update_click(self, idx: int, x_text: str, y_text: str) -> None:
+        try:
+            x = int(x_text)
+            y = int(y_text)
+        except ValueError:
+            return
+        self._actions[idx] = MouseClickAction(x=x, y=y)
+
+    # -- Add handlers --------------------------------------------------------
+
+    def _add_key_combo(self) -> None:
+        self._capture_cancel()
+        self._actions.append(KeyComboAction(keys=(Key.enter,)))
+        self._refresh_list()
+        self._capture_start(len(self._actions) - 1)
+
+    def _add_sleep(self) -> None:
+        self._capture_cancel()
+        self._actions.append(SleepAction(seconds=0.5))
+        self._refresh_list()
+
+    def _add_mouse_click(self) -> None:
+        self._capture_cancel()
+        self._actions.append(MouseClickAction(x=0, y=0))
+        self._refresh_list()
+
+    # -- Key capture (shared with the main dialog's original logic) ----------
+
+    def _capture_start(self, idx: int) -> None:
+        """Enter key-capture mode for the key-combo action at *idx*."""
+        self._capture_cancel()
+        action = self._actions[idx]
+        if not isinstance(action, KeyComboAction):
+            return
+        self._capturing_idx = idx
+        self._capturing = True
+        self._held_mods = set()
+
+        # Find the row label we just rendered and flip it to capture mode.
+        row = self._list_frame.winfo_children()[idx]
+        inner = row.winfo_children()[0]
+        target: tk.Label | None = None
+        for child in inner.winfo_children():
+            if isinstance(child, tk.Label) and child.cget("bg") == self._BTN:
+                target = child
+                break
+        if target is None:
+            self._capturing = False
+            return
+        self._capture_btn = target
+        target.configure(text="Press keys\u2026", bg=self._CAPTURE_BG)
+
+        self._listener = Listener(
+            on_press=self._on_hook_press,
+            on_release=self._on_hook_release,
+        )
+        self._listener.start()
+
+    def _on_hook_press(self, key: Key | KeyCode) -> bool | None:
+        if key in MODIFIER_KEYS:
+            self._held_mods.add(key)
+            self._win.after(0, self._update_mod_preview)
+            return None
+
+        if key == Key.esc:
+            self._win.after(0, self._capture_cancel)
+            return False
+
+        combo = build_combo(self._held_mods, key)
+        if combo:
+            self._win.after(0, self._finish_capture, combo)
+        return False
+
+    def _on_hook_release(self, key: Key | KeyCode) -> bool | None:
+        if not self._capturing:
+            return False
+        self._held_mods.discard(key)
+        self._win.after(0, self._update_mod_preview)
+        return None
+
+    def _update_mod_preview(self) -> None:
+        if not self._capturing or self._capture_btn is None:
+            return
+        self._capture_btn.configure(text=modifier_preview(self._held_mods))
+
+    def _finish_capture(self, keys: tuple[Key | str, ...]) -> None:
+        if not self._capturing:
+            return
+        idx = self._capturing_idx
+        self._actions[idx] = KeyComboAction(keys=keys)
+        self._capturing = False
+        self._capture_btn = None
+        self._held_mods = set()
+        self._refresh_list()
+
+    def _capture_cancel(self) -> None:
+        if not self._capturing:
+            return
+        if self._listener is not None and self._listener.is_alive():
+            self._listener.stop()
+        self._capturing = False
+        self._capture_btn = None
+        self._held_mods = set()
+        self._refresh_list()
+
+    # -- Dialog actions ------------------------------------------------------
+
+    def _apply(self) -> None:
+        self._capture_cancel()
+        self._on_apply(list(self._actions))
+        self._win.destroy()
+
+    def _cancel(self) -> None:
+        self._capture_cancel()
+        self._win.destroy()
+
+    def _on_escape(self, _event: tk.Event[Any]) -> None:
+        if self._capturing:
             self._capture_cancel()
         else:
             self._cancel()

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pynput.keyboard import Key, KeyCode
 
+from .models import Action, KeyComboAction, MouseClickAction, SleepAction
+
 # ---------------------------------------------------------------------------
 # Modifier classification
 # ---------------------------------------------------------------------------
@@ -103,3 +105,33 @@ def build_combo(
             return ()
 
     return tuple(keys)
+
+
+# ---------------------------------------------------------------------------
+# Action labels
+# ---------------------------------------------------------------------------
+
+
+def _format_seconds(s: float) -> str:
+    """Format *s* seconds without trailing zeros (``0.5`` not ``0.50``)."""
+    if s == int(s):
+        return f"{int(s)}s"
+    return f"{s:g}s"
+
+
+def action_label(action: Action) -> str:
+    """Return a short human-readable label for a single action."""
+    if isinstance(action, KeyComboAction):
+        return keys_to_label(action.keys) or "\u2014"
+    if isinstance(action, SleepAction):
+        return f"Sleep {_format_seconds(action.seconds)}"
+    if isinstance(action, MouseClickAction):
+        return f"Click ({action.x}, {action.y})"
+    raise TypeError(f"Unknown action type: {type(action).__name__}")
+
+
+def actions_label(actions: tuple[Action, ...]) -> str:
+    """Return a joined summary label for an action sequence."""
+    if not actions:
+        return "(empty)"
+    return " \u2192 ".join(action_label(a) for a in actions)
