@@ -155,6 +155,16 @@ from that thread. Never touch tk widgets directly from a menu callback —
 marshal back to the tk main thread via `root.after(0, fn)`. Same rule
 applies to any background thread in a tkinter app.
 
+### tk.Scale is nearly invisible on dark themes on Windows
+`tk.Scale` wraps the native Win32 trackbar, which ignores most of
+`bg` / `troughcolor` / `sliderrelief` / `highlightthickness`. On a dark
+theme it renders as a near-blank smear. If you need a slider in a
+dark-themed dialog, build a custom canvas slider — it's ~50 lines of
+`tk.Canvas` with a track rect, a fill rect, and an oval handle, plus
+`<Button-1>` / `<B1-Motion>` bindings. Full control over appearance
+and guaranteed cross-Windows-version consistency. Same pitfall applies
+to `ttk.Scale` under some Windows themes.
+
 ### Tray integration: dynamic `visible` lambdas need `update_menu()` on Windows
 pystray's `MenuItem(..., visible=lambda: ...)` is only re-evaluated when
 `Icon.update_menu()` is called — on the Windows backend the menu is a
