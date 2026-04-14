@@ -195,6 +195,7 @@ class SpotKey:
         """Wire up all mouse events on the canvas."""
         c = self.canvas
         c.bind("<Motion>", self._on_motion)
+        c.bind("<Enter>", self._on_motion)
         c.bind("<Leave>", self._on_leave)
         c.bind("<Button-1>", self._on_button_down)
         c.bind("<B1-Motion>", self._on_button_motion)
