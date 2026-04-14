@@ -540,17 +540,33 @@ class SettingsDialog:
             item.swatch_labels[ci].configure(image=photo)
 
     def _add(self) -> None:
-        """Append a new shortcut and immediately open its action editor."""
+        """Open the action editor for a brand-new shortcut.
+
+        The shortcut is only appended if the user confirms with OK, so
+        cancelling leaves the list unchanged. The editor opens with an
+        empty action sequence — users fill it in from scratch using the
+        Add Key Combo / Sleep / Mouse Click buttons.
+        """
         used = {item.color_idx for item in self._items}
         color_idx = next(
             (i for i in range(len(COLOR_PALETTE)) if i not in used), 0,
         )
+        ActionSequenceDialog(
+            parent=self._win,
+            actions=[],
+            on_apply=lambda new_actions: self._append_new_shortcut(
+                color_idx, new_actions,
+            ),
+        )
+
+    def _append_new_shortcut(
+        self, color_idx: int, actions: list[Action],
+    ) -> None:
+        """Commit a newly-edited action sequence as a new shortcut row."""
         self._items.append(_ShortcutItem(
-            actions=[KeyComboAction(keys=(Key.enter,))],
-            color_idx=color_idx,
+            actions=actions, color_idx=color_idx,
         ))
         self._refresh_rows()
-        self._edit_actions(len(self._items) - 1)
 
     def _remove(self, idx: int) -> None:
         """Remove shortcut *idx* (no-op if it's the last one)."""
