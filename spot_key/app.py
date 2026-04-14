@@ -73,6 +73,8 @@ class SpotKey:
         self.root = self._build_window()
         self.canvas = self._build_canvas()
         self._menu = self._build_context_menu()
+        self._menu_open = False
+        self._menu.bind("<Unmap>", lambda _e: setattr(self, "_menu_open", False))
         self._render_pie()
         self._bind_events()
 
@@ -86,6 +88,29 @@ class SpotKey:
             on_quit=lambda: self.root.after(0, self._quit),
         )
         self._tray.start()
+
+        # Re-assert topmost periodically: Tk on Windows sometimes drops the
+        # always-on-top flag on overrideredirect windows after another app
+        # briefly owns the foreground (fullscreen apps, UAC prompts, etc.).
+        self._topmost_timer: str | None = None
+        self._schedule_topmost_refresh()
+
+    _TOPMOST_REFRESH_MS = 1500
+
+    def _schedule_topmost_refresh(self) -> None:
+        """Re-apply -topmost to defeat sticky z-order regressions on Windows.
+
+        Skip while the context menu is mapped — otherwise the tick
+        raises the pie over its own popup (separate HWND).
+        """
+        if not self._hidden and not self._menu_open:
+            try:
+                self.root.attributes("-topmost", True)
+            except tk.TclError:
+                return
+        self._topmost_timer = self.root.after(
+            self._TOPMOST_REFRESH_MS, self._schedule_topmost_refresh,
+        )
 
     # ── Window construction ─────────────────────────────────────────────────
 
@@ -251,9 +276,16 @@ class SpotKey:
         self._render_pie()
 
     def _show_context_menu(self) -> None:
-        """Pop up the context menu anchored below the hamburger button."""
+        """Pop up the context menu anchored below the hamburger button.
+
+        Marks the menu as open so the periodic topmost re-assert tick
+        skips itself — otherwise the pie (topmost) gets raised over its
+        own popup (which lives in a separate HWND). The flag is cleared
+        from an ``<Unmap>`` binding on the menu widget.
+        """
         x = self.root.winfo_x()
         y = self.root.winfo_y()
+        self._menu_open = True
         self._menu.tk_popup(x, y + self.cfg.menu_zone_size)
 
     def _open_settings(self) -> None:
