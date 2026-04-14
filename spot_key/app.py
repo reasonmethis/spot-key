@@ -11,7 +11,7 @@ from PIL import Image, ImageDraw
 from pynput.keyboard import Controller, Key
 
 from .models import Config, Shortcut, SUPERSAMPLE
-from .persistence import load_shortcuts, save_shortcuts
+from .persistence import SavedState, load_state, save_state
 from .settings import SettingsDialog
 from .tray import TrayIcon
 from .win32 import make_layered, update_layered_window
@@ -36,9 +36,11 @@ class SpotKey:
         self,
         cfg: Config | None = None,
         keyboard: Controller | None = None,
+        initial_position: tuple[int, int] | None = None,
     ) -> None:
         self.cfg = cfg or Config()
         self.keyboard = keyboard or Controller()
+        self._initial_position = initial_position
 
         # Shortcut hover state -------------------------------------------------
         self._active_index: int | None = None    # slice currently highlighted
@@ -84,14 +86,29 @@ class SpotKey:
 
         d = self.cfg.diameter
         root.geometry(f"{d}x{d}")
-        x = root.winfo_screenwidth() - d - 40
-        y = root.winfo_screenheight() // 2 - d // 2
+        x, y = self._resolve_initial_position(root, d)
         root.geometry(f"+{x}+{y}")
 
         root.update_idletasks()
         make_layered(root.winfo_id())
 
         return root
+
+    def _resolve_initial_position(self, root: tk.Tk, d: int) -> tuple[int, int]:
+        """Return the on-screen position to open at.
+
+        Uses the persisted position when it is still within the current
+        screen bounds; otherwise falls back to the right-edge default so
+        a saved position from a disconnected monitor does not strand the
+        overlay off-screen.
+        """
+        sw = root.winfo_screenwidth()
+        sh = root.winfo_screenheight()
+        if self._initial_position is not None:
+            x, y = self._initial_position
+            if 0 <= x <= sw - d and 0 <= y <= sh - d:
+                return x, y
+        return sw - d - 40, sh // 2 - d // 2
 
     def _build_canvas(self) -> tk.Canvas:
         """Create the canvas that receives mouse events."""
@@ -227,16 +244,47 @@ class SpotKey:
         self._menu.tk_popup(x, y + self.cfg.menu_zone_size)
 
     def _open_settings(self) -> None:
-        SettingsDialog(self.root, self.cfg.shortcuts, self._apply_settings)
+        SettingsDialog(
+            self.root,
+            shortcuts=self.cfg.shortcuts,
+            diameter=self.cfg.diameter,
+            on_apply=self._apply_settings,
+            on_preview_diameter=self._preview_diameter,
+        )
 
-    def _apply_settings(self, shortcuts: tuple[Shortcut, ...]) -> None:
-        """Replace shortcuts, re-render the pie, and persist to disk."""
-        self.cfg = replace(self.cfg, shortcuts=shortcuts)
+    def _preview_diameter(self, d: int) -> None:
+        """Resize without persisting — driven by the settings size slider."""
+        self.cfg = replace(self.cfg, diameter=d)
+        self._apply_diameter(d)
+        self._render_pie()
+
+    def _apply_settings(
+        self, shortcuts: tuple[Shortcut, ...], diameter: int,
+    ) -> None:
+        """Replace shortcuts / diameter, re-render the pie, and persist."""
+        self.cfg = replace(self.cfg, shortcuts=shortcuts, diameter=diameter)
         self._cancel_shortcut_timer()
         self._active_index = None
         self._pending_index = None
+        self._apply_diameter(diameter)
         self._render_pie()
-        save_shortcuts(shortcuts)
+        self._save_state()
+
+    def _apply_diameter(self, d: int) -> None:
+        """Resize the root window and canvas to a new diameter *d*.
+
+        Keeps the pie's centre point fixed so the widget grows and
+        shrinks symmetrically around wherever the user placed it,
+        instead of expanding rightward and downward from a pinned
+        top-left corner.
+        """
+        old_d = self.root.winfo_width()
+        offset = (old_d - d) // 2
+        x = self.root.winfo_x() + offset
+        y = self.root.winfo_y() + offset
+        self.root.geometry(f"{d}x{d}+{x}+{y}")
+        self.canvas.configure(width=d, height=d)
+        self.root.update_idletasks()
 
     def _hide(self) -> None:
         """Hide the overlay. The tray icon remains the way back."""
@@ -356,9 +404,20 @@ class SpotKey:
     def _on_button_up(self, event: tk.Event[Any]) -> None:
         if self._dragging:
             self._dragging = False
+            self._save_state()
             return
         if self._click_started_in_menu:
             self._show_context_menu()
+
+    # ── Persistence ─────────────────────────────────────────────────────────
+
+    def _save_state(self) -> None:
+        """Persist shortcuts, diameter, and current window position."""
+        save_state(SavedState(
+            shortcuts=self.cfg.shortcuts,
+            diameter=self.cfg.diameter,
+            position=(self.root.winfo_x(), self.root.winfo_y()),
+        ))
 
     # ── Key sending ─────────────────────────────────────────────────────────
 
@@ -377,7 +436,11 @@ class SpotKey:
 
 
 def main() -> None:
-    """Entry point: load persisted shortcuts (if any) and launch the overlay."""
-    saved = load_shortcuts()
-    cfg = Config(shortcuts=saved) if saved else Config()
-    SpotKey(cfg).run()
+    """Entry point: load persisted state and launch the overlay."""
+    state = load_state()
+    cfg = Config()
+    if state.shortcuts is not None:
+        cfg = replace(cfg, shortcuts=state.shortcuts)
+    if state.diameter is not None:
+        cfg = replace(cfg, diameter=state.diameter)
+    SpotKey(cfg, initial_position=state.position).run()

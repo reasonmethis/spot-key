@@ -127,7 +127,9 @@ def run_flicker_test(label: str, delay_in_rebuild: float = 0.0,
         ])
     )
 
-    dialog = SettingsDialog(root, shortcuts, lambda s: None)
+    dialog = SettingsDialog(
+        root, shortcuts=shortcuts, diameter=160, on_apply=lambda *_: None,
+    )
     dialog._win.protocol("WM_DELETE_WINDOW", root.destroy)
 
     # Optionally inject a sleep in _refresh_rows to simulate a visible

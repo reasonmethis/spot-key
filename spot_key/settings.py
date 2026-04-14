@@ -83,16 +83,28 @@ class SettingsDialog:
 
     _SWATCH_PX = 22  # colour-swatch diameter in pixels
     _SWATCH_SS = 4   # supersampling factor for smooth circles
+    _SLIDER_LEN = 220
+    _SLIDER_TRACK_H = 4
+    _SLIDER_HANDLE_R = 8
 
     # -- Construction --------------------------------------------------------
+
+    _MIN_DIAMETER = 100
+    _MAX_DIAMETER = 300
 
     def __init__(
         self,
         parent: tk.Tk,
+        *,
         shortcuts: tuple[Shortcut, ...],
-        on_apply: Callable[[tuple[Shortcut, ...]], None],
+        diameter: int,
+        on_apply: Callable[[tuple[Shortcut, ...], int], None],
+        on_preview_diameter: Callable[[int], None] | None = None,
     ) -> None:
         self._on_apply = on_apply
+        self._on_preview_diameter = on_preview_diameter
+        self._diameter = diameter
+        self._original_diameter = diameter
         self._items = [
             _ShortcutItem(
                 keys=sc.keys,
@@ -202,6 +214,23 @@ class SettingsDialog:
         add_btn.pack(anchor="w")
         self._hoverable(add_btn, self._BTN, self._BTN_HV)
 
+        # Size slider -----------------------------------------------------
+        # Custom canvas slider rather than tk.Scale: the native Win32 Scale
+        # control ignores most styling, so on a dark theme it renders as a
+        # nearly-invisible smear.
+        tk.Label(
+            win, text="Size", font=self._FONT_TITLE,
+            bg=self._BG, fg=self._FG,
+        ).pack(anchor="w", padx=pad, pady=(pad, 4))
+        size_frame = tk.Frame(win, bg=self._BG)
+        size_frame.pack(fill="x", padx=pad, pady=(0, 8))
+        self._size_value = tk.Label(
+            size_frame, text=f"{self._diameter} px", font=self._FONT,
+            bg=self._BG, fg=self._DIM, width=7, anchor="e",
+        )
+        self._size_value.pack(side="right")
+        self._build_size_slider(size_frame)
+
         # Separator line
         tk.Frame(win, bg=self._BORDER, height=1).pack(
             fill="x", padx=pad, pady=(pad, 0),
@@ -228,6 +257,79 @@ class SettingsDialog:
         )
         apply_btn.pack(side="right")
         self._hoverable(apply_btn, self._ACCENT, self._ACCENT_HV)
+
+    def _build_size_slider(self, parent: tk.Frame) -> None:
+        """Build a dark-theme-friendly horizontal slider on a Canvas.
+
+        Renders a flat track, a filled portion up to the current value,
+        and a round draggable handle. Click or drag anywhere in the
+        canvas to jump the handle to that position.
+        """
+        length = self._SLIDER_LEN
+        r = self._SLIDER_HANDLE_R
+        pad = r + 2
+        w = length + 2 * pad
+        h = 2 * r + 4
+
+        canvas = tk.Canvas(
+            parent, width=w, height=h, bg=self._BG,
+            highlightthickness=0, bd=0, cursor="hand2",
+        )
+        canvas.pack(side="left", padx=(0, 8))
+
+        cy = h // 2
+        canvas.create_rectangle(
+            pad, cy - self._SLIDER_TRACK_H // 2,
+            pad + length, cy + self._SLIDER_TRACK_H // 2,
+            fill=self._CARD, outline="",
+        )
+        self._slider_fill = canvas.create_rectangle(
+            pad, cy - self._SLIDER_TRACK_H // 2,
+            pad, cy + self._SLIDER_TRACK_H // 2,
+            fill=self._ACCENT, outline="",
+        )
+        self._slider_handle = canvas.create_oval(
+            0, 0, 0, 0, fill=self._FG, outline=self._DIM, width=1,
+        )
+        self._slider_canvas = canvas
+        self._slider_pad = pad
+        self._slider_cy = cy
+        self._redraw_slider()
+
+        canvas.bind("<Button-1>", self._slider_drag)
+        canvas.bind("<B1-Motion>", self._slider_drag)
+
+    def _redraw_slider(self) -> None:
+        """Reposition the slider's fill rectangle and handle circle."""
+        frac = (
+            (self._diameter - self._MIN_DIAMETER)
+            / (self._MAX_DIAMETER - self._MIN_DIAMETER)
+        )
+        x = self._slider_pad + frac * self._SLIDER_LEN
+        cy = self._slider_cy
+        th = self._SLIDER_TRACK_H // 2
+        r = self._SLIDER_HANDLE_R
+        self._slider_canvas.coords(
+            self._slider_fill,
+            self._slider_pad, cy - th, x, cy + th,
+        )
+        self._slider_canvas.coords(
+            self._slider_handle, x - r, cy - r, x + r, cy + r,
+        )
+
+    def _slider_drag(self, event: tk.Event[Any]) -> None:
+        """Handle click/drag on the size slider canvas."""
+        frac = (event.x - self._slider_pad) / self._SLIDER_LEN
+        frac = max(0.0, min(1.0, frac))
+        span = self._MAX_DIAMETER - self._MIN_DIAMETER
+        new = self._MIN_DIAMETER + round(frac * span)
+        if new == self._diameter:
+            return
+        self._diameter = new
+        self._size_value.configure(text=f"{self._diameter} px")
+        self._redraw_slider()
+        if self._on_preview_diameter is not None:
+            self._on_preview_diameter(new)
 
     # -- Row rendering -------------------------------------------------------
 
@@ -517,12 +619,17 @@ class SettingsDialog:
             )
             for item in self._items
         )
-        self._on_apply(shortcuts)
+        self._on_apply(shortcuts, self._diameter)
         self._win.destroy()
 
     def _cancel(self) -> None:
-        """Close without applying changes."""
+        """Close without applying changes. Restore the original diameter."""
         self._capture_cancel()
+        if (
+            self._on_preview_diameter is not None
+            and self._diameter != self._original_diameter
+        ):
+            self._on_preview_diameter(self._original_diameter)
         self._win.destroy()
 
     def _on_escape(self, _event: tk.Event[Any]) -> None:
