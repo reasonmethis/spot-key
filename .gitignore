@@ -6,3 +6,5 @@ visual_test_*.png
 visual_test_crop.png
 edge_*.png
 spot_key_config.json
+build/
+Output/

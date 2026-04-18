@@ -10,7 +10,7 @@ dependencies = [
     "pystray>=0.19.5",
 ]
 
-[project.scripts]
+[project.gui-scripts]
 spot-key = "spot_key:main"
 
 [dependency-groups]
