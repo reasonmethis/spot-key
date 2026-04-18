@@ -68,6 +68,7 @@ class SpotKey:
         self._click_origin = (0, 0)
 
         self._hidden = False
+        self._resize_center: tuple[float, float] | None = None
 
         # Build the UI ---------------------------------------------------------
         self.root = self._build_window()
@@ -289,6 +290,16 @@ class SpotKey:
         self._menu.tk_popup(x, y + self.cfg.menu_zone_size)
 
     def _open_settings(self) -> None:
+        # Freeze the current centre so slider preview resizes stay
+        # anchored there instead of drifting from per-step rounding.
+        # The anchor is snapped to integer pixels — combined with the
+        # settings dialog quantising diameters to even numbers, this
+        # keeps every preview geometry exact (no rounding jitter).
+        old_d = self.root.winfo_width()
+        self._resize_center = (
+            float(self.root.winfo_x() + old_d // 2),
+            float(self.root.winfo_y() + old_d // 2),
+        )
         SettingsDialog(
             self.root,
             shortcuts=self.cfg.shortcuts,
@@ -301,7 +312,6 @@ class SpotKey:
         """Resize without persisting — driven by the settings size slider."""
         self.cfg = replace(self.cfg, diameter=d)
         self._apply_diameter(d)
-        self._render_pie()
 
     def _apply_settings(
         self, shortcuts: tuple[Shortcut, ...], diameter: int,
@@ -312,24 +322,40 @@ class SpotKey:
         self._active_index = None
         self._pending_index = None
         self._apply_diameter(diameter)
-        self._render_pie()
         self._save_state()
 
     def _apply_diameter(self, d: int) -> None:
         """Resize the root window and canvas to a new diameter *d*.
 
         Keeps the pie's centre point fixed so the widget grows and
-        shrinks symmetrically around wherever the user placed it,
-        instead of expanding rightward and downward from a pinned
-        top-left corner.
+        shrinks symmetrically around wherever the user placed it.
+
+        If an explicit ``_resize_center`` anchor is set (by
+        ``_open_settings``), new geometry is computed against that
+        float anchor. Computing from ``winfo_x() + winfo_width()/2``
+        each step truncates half a pixel per odd-delta move, so
+        repeated slider drags drift visibly off-centre. Anchoring to
+        the centre captured when the dialog opened makes successive
+        previews idempotent — move the slider anywhere, come back to
+        the original size, and the pie is in the original spot.
         """
-        old_d = self.root.winfo_width()
-        offset = (old_d - d) // 2
-        x = self.root.winfo_x() + offset
-        y = self.root.winfo_y() + offset
-        self.root.geometry(f"{d}x{d}+{x}+{y}")
+        if self._resize_center is None:
+            old_d = self.root.winfo_width()
+            cx = self.root.winfo_x() + old_d / 2
+            cy = self.root.winfo_y() + old_d / 2
+        else:
+            cx, cy = self._resize_center
+        x = round(cx - d / 2)
+        y = round(cy - d / 2)
+        # Order matters: resize the canvas and redraw the pie image
+        # BEFORE reshaping / moving the root window. Otherwise Tk may
+        # paint the window at the new geometry with the old-sized pie
+        # still in the canvas, producing a visible one-frame glitch
+        # where the top-left snaps first and the pie catches up a
+        # frame later.
         self.canvas.configure(width=d, height=d)
-        self.root.update_idletasks()
+        self._render_pie()
+        self.root.geometry(f"{d}x{d}+{x}+{y}")
 
     def _hide(self) -> None:
         """Hide the overlay. The tray icon remains the way back."""

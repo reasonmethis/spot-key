@@ -103,14 +103,17 @@ class SettingsDialog:
 
     _SWATCH_PX = 22  # colour-swatch diameter in pixels
     _SWATCH_SS = 4   # supersampling factor for smooth circles
-    _SLIDER_LEN = 220
     _SLIDER_TRACK_H = 4
     _SLIDER_HANDLE_R = 8
 
     # -- Construction --------------------------------------------------------
 
-    _MIN_DIAMETER = 100
-    _MAX_DIAMETER = 300
+    # Diameters are quantised to even numbers. Odd diameters force the
+    # app's resize anchor to round half-pixels, which makes the pie
+    # visibly jitter by one pixel as the slider is dragged.
+    _MIN_DIAMETER = 40
+    _MAX_DIAMETER = 600
+    _DIAMETER_STEP = 2
 
     def __init__(
         self,
@@ -278,31 +281,27 @@ class SettingsDialog:
         """Build a dark-theme-friendly horizontal slider on a Canvas.
 
         Renders a flat track, a filled portion up to the current value,
-        and a round draggable handle. Click or drag anywhere in the
-        canvas to jump the handle to that position.
+        and a round draggable handle. The canvas stretches to fill the
+        parent frame so the slider always spans the available width;
+        ``_slider_length`` is recomputed on every ``<Configure>``.
+        Click or drag anywhere in the canvas to jump the handle.
         """
-        length = self._SLIDER_LEN
         r = self._SLIDER_HANDLE_R
         pad = r + 2
-        w = length + 2 * pad
         h = 2 * r + 4
 
         canvas = tk.Canvas(
-            parent, width=w, height=h, bg=self._BG,
+            parent, height=h, bg=self._BG,
             highlightthickness=0, bd=0, cursor="hand2",
         )
-        canvas.pack(side="left", padx=(0, 8))
+        canvas.pack(side="left", fill="x", expand=True, padx=(0, 8))
 
         cy = h // 2
-        canvas.create_rectangle(
-            pad, cy - self._SLIDER_TRACK_H // 2,
-            pad + length, cy + self._SLIDER_TRACK_H // 2,
-            fill=self._CARD, outline="",
+        self._slider_track = canvas.create_rectangle(
+            0, 0, 0, 0, fill=self._CARD, outline="",
         )
         self._slider_fill = canvas.create_rectangle(
-            pad, cy - self._SLIDER_TRACK_H // 2,
-            pad, cy + self._SLIDER_TRACK_H // 2,
-            fill=self._ACCENT, outline="",
+            0, 0, 0, 0, fill=self._ACCENT, outline="",
         )
         self._slider_handle = canvas.create_oval(
             0, 0, 0, 0, fill=self._FG, outline=self._DIM, width=1,
@@ -310,10 +309,23 @@ class SettingsDialog:
         self._slider_canvas = canvas
         self._slider_pad = pad
         self._slider_cy = cy
-        self._redraw_slider()
+        self._slider_length = 1  # filled in on first <Configure>
 
+        canvas.bind("<Configure>", self._on_slider_resize)
         canvas.bind("<Button-1>", self._slider_drag)
         canvas.bind("<B1-Motion>", self._slider_drag)
+
+    def _on_slider_resize(self, event: tk.Event[Any]) -> None:
+        """Recompute the slider's usable length when its canvas resizes."""
+        self._slider_length = max(1, event.width - 2 * self._slider_pad)
+        cy = self._slider_cy
+        th = self._SLIDER_TRACK_H // 2
+        self._slider_canvas.coords(
+            self._slider_track,
+            self._slider_pad, cy - th,
+            self._slider_pad + self._slider_length, cy + th,
+        )
+        self._redraw_slider()
 
     def _redraw_slider(self) -> None:
         """Reposition the slider's fill rectangle and handle circle."""
@@ -321,7 +333,7 @@ class SettingsDialog:
             (self._diameter - self._MIN_DIAMETER)
             / (self._MAX_DIAMETER - self._MIN_DIAMETER)
         )
-        x = self._slider_pad + frac * self._SLIDER_LEN
+        x = self._slider_pad + frac * self._slider_length
         cy = self._slider_cy
         th = self._SLIDER_TRACK_H // 2
         r = self._SLIDER_HANDLE_R
@@ -335,10 +347,12 @@ class SettingsDialog:
 
     def _slider_drag(self, event: tk.Event[Any]) -> None:
         """Handle click/drag on the size slider canvas."""
-        frac = (event.x - self._slider_pad) / self._SLIDER_LEN
+        frac = (event.x - self._slider_pad) / self._slider_length
         frac = max(0.0, min(1.0, frac))
         span = self._MAX_DIAMETER - self._MIN_DIAMETER
-        new = self._MIN_DIAMETER + round(frac * span)
+        raw = self._MIN_DIAMETER + frac * span
+        step = self._DIAMETER_STEP
+        new = round(raw / step) * step
         if new == self._diameter:
             return
         self._diameter = new
