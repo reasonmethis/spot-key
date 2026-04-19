@@ -1,9 +1,9 @@
 """Persist user-adjustable state to ``spot_key_config.json``.
 
-The file lives in the project root next to the package, is human-readable,
-and is gitignored. It stores the keyboard shortcuts (as sequences of
-actions), the current window diameter, and the last-known window position
-so the overlay re-appears exactly where the user left it.
+When running from source the file lives next to the package (project
+root), is human-readable, and is gitignored. When installed to a
+read-only location (e.g. Program Files via the installer) it falls
+back to ``%APPDATA%/Spot Key/spot_key_config.json``.
 
 Backwards compatibility
 -----------------------
@@ -17,6 +17,7 @@ back to the application defaults.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -31,7 +32,26 @@ from .models import (
     SleepAction,
 )
 
-_CONFIG_PATH = Path(__file__).resolve().parent.parent / "spot_key_config.json"
+_CONFIG_NAME = "spot_key_config.json"
+
+
+def _resolve_config_path() -> Path:
+    """Pick the config file location.
+
+    If ``pyproject.toml`` exists next to the package we're in a source
+    checkout — store the config in the project root (gitignored).
+    Otherwise we're an installed copy (Nuitka exe, pipx, etc.) — use
+    ``%APPDATA%/Spot Key/``.
+    """
+    project_root = Path(__file__).resolve().parent.parent
+    if (project_root / "pyproject.toml").exists():
+        return project_root / _CONFIG_NAME
+    appdata = Path(os.environ.get("APPDATA", Path.home())) / "Spot Key"
+    appdata.mkdir(parents=True, exist_ok=True)
+    return appdata / _CONFIG_NAME
+
+
+_CONFIG_PATH = _resolve_config_path()
 
 
 @dataclass(frozen=True)
