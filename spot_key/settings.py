@@ -142,16 +142,29 @@ class SettingsDialog:
         win.configure(bg=self._BG)
         win.resizable(False, False)
         win.attributes("-topmost", True)
+        # Start fully transparent so the window is mapped and widgets
+        # render, but nothing is visible. After everything is laid out
+        # and painted we snap to opaque — no content-building flicker.
+        win.attributes("-alpha", 0.0)
         self._win = win
 
         self._list_frame: tk.Frame  # assigned in _build_layout
         self._build_layout()
 
-        # Centre on screen.
+        # Centre on the primary monitor.
         win.update_idletasks()
-        x = win.winfo_screenwidth() // 2 - win.winfo_width() // 2
-        y = win.winfo_screenheight() // 2 - win.winfo_height() // 2
+        try:
+            import ctypes
+            sw = ctypes.windll.user32.GetSystemMetrics(0)  # SM_CXSCREEN
+            sh = ctypes.windll.user32.GetSystemMetrics(1)  # SM_CYSCREEN
+        except Exception:
+            sw = win.winfo_screenwidth()
+            sh = win.winfo_screenheight()
+        x = sw // 2 - win.winfo_width() // 2
+        y = sh // 2 - win.winfo_height() // 2
         win.geometry(f"+{x}+{y}")
+        win.update()
+        win.attributes("-alpha", 1.0)
 
         win.grab_set()
         win.focus_set()
@@ -669,6 +682,7 @@ class ActionSequenceDialog:
         win.configure(bg=self._BG)
         win.resizable(False, False)
         win.attributes("-topmost", True)
+        win.attributes("-alpha", 0.0)
         self._win = win
 
         self._list_frame: tk.Frame  # assigned in _build_layout
@@ -683,6 +697,8 @@ class ActionSequenceDialog:
         x = px + pw // 2 - win.winfo_width() // 2
         y = py + ph // 2 - win.winfo_height() // 2
         win.geometry(f"+{max(0, x)}+{max(0, y)}")
+        win.update()
+        win.attributes("-alpha", 1.0)
 
         win.transient(parent)
         win.grab_set()
