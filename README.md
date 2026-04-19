@@ -10,7 +10,7 @@ Each slice of the pie represents a different keyboard shortcut. Hover over a sli
 
 - **Pie-chart overlay** — configurable shortcuts, one per slice, with distinct colors
 - **Hover to trigger** — deliberate 330ms dwell time prevents accidental activation
-- **Action sequences** — each shortcut can run a sequence of key combos, mouse clicks, and timed delays
+- **Action sequences** — each shortcut can fire a single key combo or chain together multiple key presses, mouse clicks, and timed delays
 - **Smooth rendering** — Pillow supersampling with Win32 layered windows for true per-pixel alpha transparency (no edge fringe on any background)
 - **Always on top** — stays visible over all windows, automatically re-asserts topmost status
 - **Draggable** — grab the menu button (top-left) to reposition
@@ -46,11 +46,12 @@ spot-key
 
 ## Default shortcuts
 
-| Slice | Color | Shortcut |
-|-------|-------|----------|
-| Top | Blue | Ctrl+Q |
-| Bottom-right | Green | Ctrl+C |
-| Bottom-left | Amber | Enter |
+| Slice | Color | Action |
+|-------|-------|--------|
+| Top | Blue | Types "hey" (three key presses in sequence) |
+| Bottom | Green | Alt+Tab |
+
+Each shortcut can be a single key combo or a **sequence of actions** — multiple key combos, timed delays, and mouse clicks chained together. For example, you could set up a shortcut that types a word, waits 500ms, then clicks a specific screen position.
 
 Shortcuts can be customised via the Settings dialog (hamburger menu → Settings).
 

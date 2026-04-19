@@ -66,7 +66,7 @@ def keys_to_label(keys: tuple[Key | str, ...]) -> str:
             else:
                 parts.append(name.replace("_", " ").title())
         else:
-            parts.append(k.upper())
+            parts.append(k)
     return "+".join(parts)
 
 

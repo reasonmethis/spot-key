@@ -84,9 +84,16 @@ def _kc(*keys: Key | str) -> KeyComboAction:
 
 
 _DEFAULT_SHORTCUTS: tuple[Shortcut, ...] = (
-    Shortcut("Ctrl+Q", (_kc(Key.ctrl_l, "q"),), "#4A90D9", "#2563EB"),
-    Shortcut("Ctrl+C", (_kc(Key.ctrl_l, "c"),), "#10B981", "#059669"),
-    Shortcut("Enter",  (_kc(Key.enter),),       "#F59E0B", "#D97706"),
+    Shortcut(
+        "hey",
+        (_kc("h"), _kc("e"), _kc("y")),
+        "#4A90D9", "#2563EB",
+    ),
+    Shortcut(
+        "Alt+Tab",
+        (_kc(Key.alt_l, Key.tab),),
+        "#10B981", "#059669",
+    ),
 )
 
 
