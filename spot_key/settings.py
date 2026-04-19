@@ -51,9 +51,28 @@ _GA_ROOT = 2
 if sys.platform == "win32":
     _LockWindowUpdate = ctypes.windll.user32.LockWindowUpdate
     _GetAncestor = ctypes.windll.user32.GetAncestor
+    _dwmapi = ctypes.windll.dwmapi
+    _DWMWA_TRANSITIONS_FORCEDISABLED = 3
 else:
     _LockWindowUpdate = None
     _GetAncestor = None
+    _dwmapi = None
+
+
+def _disable_dwm_animation(win: tk.Toplevel) -> None:
+    """Disable the DWM fade-in animation on a Toplevel window."""
+    if _dwmapi is None:
+        return
+    try:
+        win.update_idletasks()
+        hwnd = int(win.wm_frame(), 16)
+        val = ctypes.c_int(1)
+        _dwmapi.DwmSetWindowAttribute(
+            hwnd, _DWMWA_TRANSITIONS_FORCEDISABLED,
+            ctypes.byref(val), ctypes.sizeof(val),
+        )
+    except Exception:
+        pass
 
 # ---------------------------------------------------------------------------
 # Mutable working copy of a shortcut used during editing
@@ -145,14 +164,15 @@ class SettingsDialog:
         # Start fully transparent so the window is mapped and widgets
         # render, but nothing is visible. After everything is laid out
         # and painted we snap to opaque — no content-building flicker.
-        win.attributes("-alpha", 0.0)
+        win.withdraw()
         self._win = win
 
         self._list_frame: tk.Frame  # assigned in _build_layout
         self._build_layout()
 
-        # Centre on the primary monitor.
         win.update_idletasks()
+
+        # Centre on the primary monitor.
         try:
             import ctypes
             sw = ctypes.windll.user32.GetSystemMetrics(0)  # SM_CXSCREEN
@@ -163,8 +183,10 @@ class SettingsDialog:
         x = sw // 2 - win.winfo_width() // 2
         y = sh // 2 - win.winfo_height() // 2
         win.geometry(f"+{x}+{y}")
-        win.update()
-        win.attributes("-alpha", 1.0)
+
+        win.deiconify()
+        _disable_dwm_animation(win)
+        win.update_idletasks()
 
         win.grab_set()
         win.focus_set()
@@ -682,14 +704,15 @@ class ActionSequenceDialog:
         win.configure(bg=self._BG)
         win.resizable(False, False)
         win.attributes("-topmost", True)
-        win.attributes("-alpha", 0.0)
+        win.withdraw()
         self._win = win
 
         self._list_frame: tk.Frame  # assigned in _build_layout
         self._build_layout()
 
-        # Centre over the parent settings dialog.
         win.update_idletasks()
+
+        # Centre over the parent settings dialog.
         px = parent.winfo_rootx()
         py = parent.winfo_rooty()
         pw = parent.winfo_width()
@@ -697,7 +720,12 @@ class ActionSequenceDialog:
         x = px + pw // 2 - win.winfo_width() // 2
         y = py + ph // 2 - win.winfo_height() // 2
         win.geometry(f"+{max(0, x)}+{max(0, y)}")
-        win.update()
+
+        # Map the window invisibly, disable DWM fade, then reveal.
+        win.attributes("-alpha", 0.0)
+        win.deiconify()
+        win.update_idletasks()
+        _disable_dwm_animation(win)
         win.attributes("-alpha", 1.0)
 
         win.transient(parent)
