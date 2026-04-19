@@ -73,9 +73,8 @@ class SpotKey:
         # Build the UI ---------------------------------------------------------
         self.root = self._build_window()
         self.canvas = self._build_canvas()
-        self._menu = self._build_context_menu()
+        self._build_context_menu()
         self._menu_open = False
-        self._menu.bind("<Unmap>", lambda _e: setattr(self, "_menu_open", False))
         self._render_pie()
         self._bind_events()
 
@@ -155,14 +154,73 @@ class SpotKey:
         canvas.pack()
         return canvas
 
-    def _build_context_menu(self) -> tk.Menu:
-        """Create the right-click / hamburger context menu."""
-        menu = tk.Menu(self.root, tearoff=0)
-        menu.add_command(label="Settings...", command=self._open_settings)
-        menu.add_command(label="Hide to tray", command=self._hide)
-        menu.add_separator()
-        menu.add_command(label="Quit", command=self._quit)
-        return menu
+    # ── Dark popup menu ──────────────────────────────────────────────────
+
+    _MENU_BG = "#1F2937"
+    _MENU_FG = "#F3F4F6"
+    _MENU_HV = "#374151"
+    _MENU_SEP = "#4B5563"
+    _MENU_FONT = ("Segoe UI", 10)
+    _MENU_PAD_X = 20
+    _MENU_PAD_Y = 6
+
+    def _build_context_menu(self) -> None:
+        """Prepare the popup menu items (the Toplevel is created on demand)."""
+        self._menu_popup: tk.Toplevel | None = None
+        self._menu_items = [
+            ("Settings...", self._open_settings),
+            ("Hide to tray", self._hide),
+            None,  # separator
+            ("Quit", self._quit),
+        ]
+
+    def _show_popup_menu(self, x: int, y: int) -> None:
+        """Create and show the dark-themed popup menu at (x, y)."""
+        self._dismiss_popup_menu()
+
+        popup = tk.Toplevel(self.root)
+        popup.overrideredirect(True)
+        popup.attributes("-topmost", True)
+        popup.configure(bg=self._MENU_SEP)  # border color
+        self._menu_popup = popup
+
+        inner = tk.Frame(popup, bg=self._MENU_BG)
+        inner.pack(padx=1, pady=1)  # 1px border
+
+        for item in self._menu_items:
+            if item is None:
+                tk.Frame(inner, bg=self._MENU_SEP, height=1).pack(
+                    fill="x", padx=4, pady=2,
+                )
+                continue
+            label, command = item
+            lbl = tk.Label(
+                inner, text=label, font=self._MENU_FONT,
+                bg=self._MENU_BG, fg=self._MENU_FG,
+                padx=self._MENU_PAD_X, pady=self._MENU_PAD_Y,
+                anchor="w", cursor="hand2",
+            )
+            lbl.pack(fill="x")
+            lbl.bind("<Enter>", lambda _e, w=lbl: w.configure(bg=self._MENU_HV))
+            lbl.bind("<Leave>", lambda _e, w=lbl: w.configure(bg=self._MENU_BG))
+            lbl.bind("<Button-1>", lambda _e, cmd=command: (
+                self._dismiss_popup_menu(), cmd(),
+            ))
+
+        popup.update_idletasks()
+        popup.geometry(f"+{x}+{y}")
+
+        self._menu_open = True
+        # Dismiss on click anywhere outside.
+        popup.bind("<FocusOut>", lambda _e: self._dismiss_popup_menu())
+        popup.focus_set()
+
+    def _dismiss_popup_menu(self) -> None:
+        """Close the popup menu if open."""
+        if self._menu_popup is not None:
+            self._menu_popup.destroy()
+            self._menu_popup = None
+            self._menu_open = False
 
     # ── Rendering ───────────────────────────────────────────────────────────
 
@@ -277,17 +335,10 @@ class SpotKey:
         self._render_pie()
 
     def _show_context_menu(self) -> None:
-        """Pop up the context menu anchored below the hamburger button.
-
-        Marks the menu as open so the periodic topmost re-assert tick
-        skips itself — otherwise the pie (topmost) gets raised over its
-        own popup (which lives in a separate HWND). The flag is cleared
-        from an ``<Unmap>`` binding on the menu widget.
-        """
+        """Pop up the dark-themed context menu below the hamburger button."""
         x = self.root.winfo_x()
-        y = self.root.winfo_y()
-        self._menu_open = True
-        self._menu.tk_popup(x, y + self.cfg.menu_zone_size)
+        y = self.root.winfo_y() + self.cfg.menu_zone_size
+        self._show_popup_menu(x, y)
 
     def _open_settings(self) -> None:
         # Freeze the current centre so slider preview resizes stay
