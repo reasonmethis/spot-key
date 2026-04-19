@@ -180,12 +180,12 @@ class SettingsDialog:
         except Exception:
             sw = win.winfo_screenwidth()
             sh = win.winfo_screenheight()
+        win.deiconify()
+        _disable_dwm_animation(win)
+        win.update_idletasks()
         x = sw // 2 - win.winfo_width() // 2
         y = sh // 2 - win.winfo_height() // 2
         win.geometry(f"+{x}+{y}")
-
-        win.deiconify()
-        _disable_dwm_animation(win)
         win.update_idletasks()
 
         win.grab_set()
