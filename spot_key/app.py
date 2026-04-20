@@ -7,6 +7,7 @@ import threading
 import time
 import tkinter as tk
 from dataclasses import replace
+from importlib.metadata import version as pkg_version
 from typing import Any
 
 import numpy as np
@@ -172,6 +173,7 @@ class SpotKey:
             ("Settings...", self._open_settings),
             ("Hide to tray", self._hide),
             None,  # separator
+            ("About", self._show_about),
             ("Quit", self._quit),
         ]
 
@@ -222,6 +224,71 @@ class SpotKey:
             self._menu_popup.destroy()
             self._menu_popup = None
             self._menu_open = False
+
+    # ── About dialog ────────────────────────────────────────────────────────
+
+    def _show_about(self) -> None:
+        """Show a small About dialog with version, author, and license."""
+        try:
+            ver = pkg_version("spot-key")
+        except Exception:
+            ver = "dev"
+
+        about = tk.Toplevel(self.root)
+        about.title("About Spot Key")
+        about.configure(bg=self._MENU_BG)
+        about.resizable(False, False)
+        about.attributes("-topmost", True)
+        about.withdraw()
+
+        pad = 16
+        tk.Label(
+            about, text="Spot Key", font=("Segoe UI", 16, "bold"),
+            bg=self._MENU_BG, fg=self._MENU_FG,
+        ).pack(padx=pad, pady=(pad, 4))
+        tk.Label(
+            about, text=f"Version {ver}", font=("Segoe UI", 10),
+            bg=self._MENU_BG, fg="#9CA3AF",
+        ).pack(padx=pad)
+        tk.Label(
+            about, text="by Dmitriy Vasilyuk", font=("Segoe UI", 10),
+            bg=self._MENU_BG, fg=self._MENU_FG,
+        ).pack(padx=pad, pady=(8, 0))
+        tk.Label(
+            about, text="MIT License", font=("Segoe UI", 10),
+            bg=self._MENU_BG, fg="#9CA3AF",
+        ).pack(padx=pad, pady=(4, 4))
+
+        ok_btn = tk.Label(
+            about, text="OK", font=("Segoe UI", 10),
+            bg="#2563EB", fg=self._MENU_FG,
+            padx=20, pady=4, cursor="hand2",
+        )
+        ok_btn.pack(pady=(8, pad))
+        ok_btn.bind("<Button-1>", lambda _: about.destroy())
+        ok_btn.bind("<Enter>", lambda _: ok_btn.configure(bg="#1D4ED8"))
+        ok_btn.bind("<Leave>", lambda _: ok_btn.configure(bg="#2563EB"))
+
+        about.update_idletasks()
+
+        # Centre on screen.
+        import ctypes
+        try:
+            sw = ctypes.windll.user32.GetSystemMetrics(0)
+            sh = ctypes.windll.user32.GetSystemMetrics(1)
+        except Exception:
+            sw = about.winfo_screenwidth()
+            sh = about.winfo_screenheight()
+        about.deiconify()
+        about.update_idletasks()
+        x = sw // 2 - about.winfo_width() // 2
+        y = sh // 2 - about.winfo_height() // 2
+        about.geometry(f"+{x}+{y}")
+
+        about.grab_set()
+        about.focus_set()
+        about.bind("<Escape>", lambda _: about.destroy())
+        about.bind("<Return>", lambda _: about.destroy())
 
     # ── Rendering ───────────────────────────────────────────────────────────
 
