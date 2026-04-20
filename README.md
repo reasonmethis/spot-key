@@ -36,6 +36,10 @@ Requires [Python 3.12+](https://www.python.org/) and [uv](https://docs.astral.sh
 - **System tray** — hide the pie to the tray and bring it back with a click
 - Everything persists between sessions: window position, size, and all your shortcuts
 
+<p align="center">
+  <img src="screenshot-settings.png" alt="Settings dialog" width="380">
+</p>
+
 ## Building the installer
 
 To build locally (Windows only):
