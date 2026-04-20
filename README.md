@@ -1,6 +1,6 @@
 # Spot Key
 
-A small floating pie-chart overlay for Windows that triggers keyboard shortcuts when you hover over a slice.
+A small semi-transparent floating pie-chart overlay for Windows that triggers macros (sequences of keystrokes, mouse clicks, and wait periods) when you hover over a slice.
 
 <p align="center">
   <img src="screenshot.png" alt="Spot Key floating over VS Code" width="280">
