@@ -140,13 +140,18 @@ class SettingsDialog:
         *,
         shortcuts: tuple[Shortcut, ...],
         diameter: int,
-        on_apply: Callable[[tuple[Shortcut, ...], int], None],
+        opacity: float = 1.0,
+        on_apply: Callable[[tuple[Shortcut, ...], int, float], None] | None = None,
         on_preview_diameter: Callable[[int], None] | None = None,
+        on_preview_opacity: Callable[[float], None] | None = None,
     ) -> None:
         self._on_apply = on_apply
         self._on_preview_diameter = on_preview_diameter
+        self._on_preview_opacity = on_preview_opacity
         self._diameter = diameter
         self._original_diameter = diameter
+        self._opacity = opacity
+        self._original_opacity = opacity
         self._items = [
             _ShortcutItem(
                 actions=list(sc.actions),
@@ -285,6 +290,20 @@ class SettingsDialog:
         self._size_value.pack(side="right")
         self._build_size_slider(size_frame)
 
+        # Opacity slider
+        tk.Label(
+            win, text="Opacity", font=self._FONT_TITLE,
+            bg=self._BG, fg=self._FG,
+        ).pack(anchor="w", padx=pad, pady=(pad, 4))
+        opacity_frame = tk.Frame(win, bg=self._BG)
+        opacity_frame.pack(fill="x", padx=pad, pady=(0, 8))
+        self._opacity_value = tk.Label(
+            opacity_frame, text=f"{round(self._opacity * 100)}%", font=self._FONT,
+            bg=self._BG, fg=self._DIM, width=7, anchor="e",
+        )
+        self._opacity_value.pack(side="right")
+        self._build_opacity_slider(opacity_frame)
+
         # Separator line
         tk.Frame(win, bg=self._BORDER, height=1).pack(
             fill="x", padx=pad, pady=(pad, 0),
@@ -395,6 +414,84 @@ class SettingsDialog:
         self._redraw_slider()
         if self._on_preview_diameter is not None:
             self._on_preview_diameter(new)
+
+    # -- Opacity slider ------------------------------------------------------
+
+    _MIN_OPACITY = 0.05
+    _MAX_OPACITY = 1.0
+
+    def _build_opacity_slider(self, parent: tk.Frame) -> None:
+        """Build the opacity slider — same style as the size slider."""
+        r = self._SLIDER_HANDLE_R
+        pad = r + 2
+        h = 2 * r + 4
+
+        canvas = tk.Canvas(
+            parent, height=h, bg=self._BG,
+            highlightthickness=0, bd=0, cursor="hand2",
+        )
+        canvas.pack(side="left", fill="x", expand=True, padx=(0, 8))
+
+        cy = h // 2
+        self._op_slider_track = canvas.create_rectangle(
+            0, 0, 0, 0, fill=self._CARD, outline="",
+        )
+        self._op_slider_fill = canvas.create_rectangle(
+            0, 0, 0, 0, fill=self._ACCENT, outline="",
+        )
+        self._op_slider_handle = canvas.create_oval(
+            0, 0, 0, 0, fill=self._FG, outline=self._DIM, width=1,
+        )
+        self._op_slider_canvas = canvas
+        self._op_slider_pad = pad
+        self._op_slider_cy = cy
+        self._op_slider_length = 1
+
+        canvas.bind("<Configure>", self._on_op_slider_resize)
+        canvas.bind("<Button-1>", self._op_slider_drag)
+        canvas.bind("<B1-Motion>", self._op_slider_drag)
+
+    def _on_op_slider_resize(self, event: tk.Event[Any]) -> None:
+        self._op_slider_length = max(1, event.width - 2 * self._op_slider_pad)
+        cy = self._op_slider_cy
+        th = self._SLIDER_TRACK_H // 2
+        self._op_slider_canvas.coords(
+            self._op_slider_track,
+            self._op_slider_pad, cy - th,
+            self._op_slider_pad + self._op_slider_length, cy + th,
+        )
+        self._redraw_op_slider()
+
+    def _redraw_op_slider(self) -> None:
+        frac = (
+            (self._opacity - self._MIN_OPACITY)
+            / (self._MAX_OPACITY - self._MIN_OPACITY)
+        )
+        x = self._op_slider_pad + frac * self._op_slider_length
+        cy = self._op_slider_cy
+        th = self._SLIDER_TRACK_H // 2
+        r = self._SLIDER_HANDLE_R
+        self._op_slider_canvas.coords(
+            self._op_slider_fill,
+            self._op_slider_pad, cy - th, x, cy + th,
+        )
+        self._op_slider_canvas.coords(
+            self._op_slider_handle, x - r, cy - r, x + r, cy + r,
+        )
+
+    def _op_slider_drag(self, event: tk.Event[Any]) -> None:
+        frac = (event.x - self._op_slider_pad) / self._op_slider_length
+        frac = max(0.0, min(1.0, frac))
+        new = self._MIN_OPACITY + frac * (self._MAX_OPACITY - self._MIN_OPACITY)
+        new = round(new, 2)
+        new = max(self._MIN_OPACITY, min(self._MAX_OPACITY, new))
+        if new == self._opacity:
+            return
+        self._opacity = new
+        self._opacity_value.configure(text=f"{round(self._opacity * 100)}%")
+        self._redraw_op_slider()
+        if self._on_preview_opacity is not None:
+            self._on_preview_opacity(new)
 
     # -- Row rendering -------------------------------------------------------
 
@@ -637,16 +734,21 @@ class SettingsDialog:
             )
             for item in self._items
         )
-        self._on_apply(shortcuts, self._diameter)
+        self._on_apply(shortcuts, self._diameter, self._opacity)
         self._win.destroy()
 
     def _cancel(self) -> None:
-        """Close without applying changes. Restore the original diameter."""
+        """Close without applying changes. Restore original diameter/opacity."""
         if (
             self._on_preview_diameter is not None
             and self._diameter != self._original_diameter
         ):
             self._on_preview_diameter(self._original_diameter)
+        if (
+            self._on_preview_opacity is not None
+            and self._opacity != self._original_opacity
+        ):
+            self._on_preview_opacity(self._original_opacity)
         self._win.destroy()
 
     def _on_escape(self, _event: tk.Event[Any]) -> None:

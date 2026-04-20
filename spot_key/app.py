@@ -9,6 +9,7 @@ import tkinter as tk
 from dataclasses import replace
 from typing import Any
 
+import numpy as np
 from PIL import Image, ImageDraw
 from pynput.keyboard import Controller
 from pynput.mouse import Button, Controller as MouseController
@@ -255,6 +256,13 @@ class SpotKey:
 
         # Downsample with LANCZOS for smooth antialiased edges.
         img = img.resize((d, d), Image.LANCZOS)
+
+        # Apply global opacity by scaling the alpha channel.
+        if self.cfg.opacity < 1.0:
+            arr = np.array(img)
+            arr[:, :, 3] = (arr[:, :, 3] * self.cfg.opacity).astype(np.uint8)
+            img = Image.fromarray(arr)
+
         update_layered_window(self.root.winfo_id(), img)
 
     def _draw_menu_button(self, draw: ImageDraw.ImageDraw, ss: int) -> None:
@@ -355,8 +363,10 @@ class SpotKey:
             self.root,
             shortcuts=self.cfg.shortcuts,
             diameter=self.cfg.diameter,
+            opacity=self.cfg.opacity,
             on_apply=self._apply_settings,
             on_preview_diameter=self._preview_diameter,
+            on_preview_opacity=self._preview_opacity,
         )
 
     def _preview_diameter(self, d: int) -> None:
@@ -364,11 +374,18 @@ class SpotKey:
         self.cfg = replace(self.cfg, diameter=d)
         self._apply_diameter(d)
 
+    def _preview_opacity(self, opacity: float) -> None:
+        """Update opacity without persisting — driven by the opacity slider."""
+        self.cfg = replace(self.cfg, opacity=opacity)
+        self._render_pie()
+
     def _apply_settings(
         self, shortcuts: tuple[Shortcut, ...], diameter: int,
+        opacity: float,
     ) -> None:
-        """Replace shortcuts / diameter, re-render the pie, and persist."""
-        self.cfg = replace(self.cfg, shortcuts=shortcuts, diameter=diameter)
+        """Replace shortcuts / diameter / opacity, re-render, and persist."""
+        self.cfg = replace(self.cfg, shortcuts=shortcuts, diameter=diameter,
+                           opacity=opacity)
         self._cancel_shortcut_timer()
         self._active_index = None
         self._pending_index = None
@@ -538,6 +555,7 @@ class SpotKey:
         save_state(SavedState(
             shortcuts=self.cfg.shortcuts,
             diameter=self.cfg.diameter,
+            opacity=self.cfg.opacity,
             position=(self.root.winfo_x(), self.root.winfo_y()),
         ))
 
@@ -585,4 +603,6 @@ def main() -> None:
         cfg = replace(cfg, shortcuts=state.shortcuts)
     if state.diameter is not None:
         cfg = replace(cfg, diameter=state.diameter)
+    if state.opacity is not None:
+        cfg = replace(cfg, opacity=state.opacity)
     SpotKey(cfg, initial_position=state.position).run()

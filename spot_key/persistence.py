@@ -64,6 +64,7 @@ class SavedState:
 
     shortcuts: tuple[Shortcut, ...] | None = None
     diameter: int | None = None
+    opacity: float | None = None
     position: tuple[int, int] | None = None
 
 
@@ -146,6 +147,8 @@ def save_state(state: SavedState) -> None:
         ]
     if state.diameter is not None:
         data["diameter"] = state.diameter
+    if state.opacity is not None:
+        data["opacity"] = state.opacity
     if state.position is not None:
         data["position"] = {"x": state.position[0], "y": state.position[1]}
     _CONFIG_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
@@ -171,10 +174,13 @@ def load_state() -> SavedState:
 
     diameter = raw.get("diameter") if isinstance(raw.get("diameter"), int) else None
 
+    opacity_raw = raw.get("opacity")
+    opacity = float(opacity_raw) if isinstance(opacity_raw, (int, float)) else None
+
     position: tuple[int, int] | None = None
     pos_raw = raw.get("position")
     if isinstance(pos_raw, dict) and isinstance(pos_raw.get("x"), int) \
             and isinstance(pos_raw.get("y"), int):
         position = (pos_raw["x"], pos_raw["y"])
 
-    return SavedState(shortcuts=shortcuts, diameter=diameter, position=position)
+    return SavedState(shortcuts=shortcuts, diameter=diameter, opacity=opacity, position=position)

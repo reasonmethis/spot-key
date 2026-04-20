@@ -109,6 +109,7 @@ class Config:
         default_factory=lambda: _DEFAULT_SHORTCUTS,
     )
     diameter: int = 160
+    opacity: float = 1.0
     outline_color: str = "#374151"
     menu_zone_size: int = 28
     menu_zone_color: str = "#6B7280"
