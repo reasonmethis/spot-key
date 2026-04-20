@@ -27,6 +27,7 @@ from typing import Any
 
 from PIL import Image, ImageDraw, ImageTk
 from pynput.keyboard import Key, KeyCode, Listener
+from pynput.mouse import Listener as MouseListener
 
 from .keys import (
     MODIFIER_KEYS,
@@ -796,10 +797,16 @@ class ActionSequenceDialog:
         self._actions = list(actions)
         self._on_apply = on_apply
 
+        self._parent = parent
+
         self._capturing = False
         self._capture_btn: tk.Label | None = None
         self._held_mods: set[Key] = set()
         self._listener: Listener | None = None
+
+        self._picking = False
+        self._picking_idx: int = -1
+        self._mouse_listener: MouseListener | None = None
 
         win = tk.Toplevel(parent)
         win.title("Edit Actions")
@@ -1017,6 +1024,23 @@ class ActionSequenceDialog:
                 lambda *_, i=idx, xv=x_var, yv=y_var:
                 self._update_click(i, xv.get(), yv.get()),
             )
+            pick_btn = tk.Label(
+                inner, text="Pick", font=self._FONT,
+                bg=self._BTN, fg=self._FG, cursor="hand2",
+                padx=8, pady=2,
+            )
+            pick_btn.pack(side="left", padx=(8, 0))
+            pick_btn.bind(
+                "<Button-1>", lambda _, i=idx: self._pick_start(i),
+            )
+            pick_btn.bind(
+                "<Enter>",
+                lambda e: e.widget.configure(bg=self._BTN_HV),
+            )
+            pick_btn.bind(
+                "<Leave>",
+                lambda e: e.widget.configure(bg=self._BTN),
+            )
 
         # Remove button
         rm_lbl = tk.Label(
@@ -1067,6 +1091,66 @@ class ActionSequenceDialog:
             return
         self._actions[idx] = MouseClickAction(x=x, y=y)
 
+    # -- Mouse pick mode -----------------------------------------------------
+
+    def _pick_start(self, idx: int) -> None:
+        """Enter mouse-pick mode: hide dialogs, wait for a click anywhere."""
+        self._capture_cancel()
+        self._pick_cancel()
+        action = self._actions[idx]
+        if not isinstance(action, MouseClickAction):
+            return
+        self._picking = True
+        self._picking_idx = idx
+
+        # Hide both dialogs so the user can click on the target location.
+        self._win.withdraw()
+        self._parent.withdraw()
+
+        # Brief delay to let the windows disappear before listening,
+        # so the user doesn't accidentally capture a click on the dialog.
+        self._win.after(300, self._pick_listen)
+
+    def _pick_listen(self) -> None:
+        """Start the mouse listener after dialogs are hidden."""
+        if not self._picking:
+            return
+        self._mouse_listener = MouseListener(on_click=self._on_pick_click)
+        self._mouse_listener.start()
+
+    def _on_pick_click(self, x: int, y: int, button: object,
+                       pressed: bool) -> bool:
+        """Called by pynput on any mouse click. Capture on press."""
+        if not pressed:
+            return True  # ignore release
+        self._win.after(0, self._finish_pick, x, y)
+        return False  # stop listener
+
+    def _finish_pick(self, x: int, y: int) -> None:
+        """Store the picked coordinates and restore the dialogs."""
+        if not self._picking:
+            return
+        self._actions[self._picking_idx] = MouseClickAction(x=x, y=y)
+        self._picking = False
+        self._parent.deiconify()
+        self._win.deiconify()
+        self._win.focus_set()
+        self._refresh_list()
+
+    def _pick_cancel(self) -> None:
+        """Cancel mouse-pick mode and restore dialogs if hidden."""
+        if not self._picking:
+            return
+        if self._mouse_listener is not None and self._mouse_listener.is_alive():
+            self._mouse_listener.stop()
+        was_picking = self._picking
+        self._picking = False
+        if was_picking:
+            self._parent.deiconify()
+            self._win.deiconify()
+            self._win.focus_set()
+            self._refresh_list()
+
     # -- Add handlers --------------------------------------------------------
 
     def _add_key_combo(self) -> None:
@@ -1082,6 +1166,7 @@ class ActionSequenceDialog:
 
     def _add_mouse_click(self) -> None:
         self._capture_cancel()
+        self._pick_cancel()
         self._actions.append(MouseClickAction(x=0, y=0))
         self._refresh_list()
 
@@ -1168,15 +1253,19 @@ class ActionSequenceDialog:
 
     def _apply(self) -> None:
         self._capture_cancel()
+        self._pick_cancel()
         self._on_apply(list(self._actions))
         self._win.destroy()
 
     def _cancel(self) -> None:
         self._capture_cancel()
+        self._pick_cancel()
         self._win.destroy()
 
     def _on_escape(self, _event: tk.Event[Any]) -> None:
         if self._capturing:
             self._capture_cancel()
+        elif self._picking:
+            self._pick_cancel()
         else:
             self._cancel()
