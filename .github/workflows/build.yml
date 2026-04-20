@@ -42,8 +42,15 @@ jobs:
           choco install innosetup -y --no-progress
         shell: cmd
 
+      - name: Read version from pyproject.toml
+        id: version
+        run: |
+          $ver = (Select-String -Path pyproject.toml -Pattern 'version\s*=\s*"(.+?)"').Matches[0].Groups[1].Value
+          echo "APP_VERSION=$ver" >> $env:GITHUB_OUTPUT
+        shell: pwsh
+
       - name: Build installer
-        run: iscc installer.iss
+        run: iscc /DMyAppVersion=${{ steps.version.outputs.APP_VERSION }} installer.iss
         shell: cmd
 
       - name: Upload installer artifact

@@ -13,12 +13,23 @@ Produces:
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
+
+
+def _read_version() -> str:
+    """Read the version string from pyproject.toml."""
+    text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    m = re.search(r'version\s*=\s*"(.+?)"', text)
+    if not m:
+        print("ERROR: Could not find version in pyproject.toml")
+        sys.exit(1)
+    return m.group(1)
 BUILD_DIR = ROOT / "build"
 DIST_DIR = BUILD_DIR / "spot_key.dist"
 
@@ -63,7 +74,11 @@ def main() -> None:
 
     print("\n=== Step 2: Inno Setup installer ===")
     iscc = _find_iscc()
-    subprocess.run([iscc, str(ROOT / "installer.iss")], check=True)
+    version = _read_version()
+    print(f"Version: {version}")
+    subprocess.run([
+        iscc, f"/DMyAppVersion={version}", str(ROOT / "installer.iss"),
+    ], check=True)
 
     # Find the output
     output_dir = ROOT / "Output"

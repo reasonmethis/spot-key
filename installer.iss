@@ -2,7 +2,9 @@
 ; Requires Nuitka build output in build\spot_key.dist\
 
 #define MyAppName "Spot Key"
-#define MyAppVersion "0.1.4"
+#ifndef MyAppVersion
+  #define MyAppVersion "0.1.5"
+#endif
 #define MyAppPublisher "Dmitriy Vasilyuk"
 #define MyAppURL "https://github.com/reasonmethis/spot-key"
 #define MyAppExeName "spot_key.exe"
