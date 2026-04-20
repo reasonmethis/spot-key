@@ -1,35 +1,24 @@
 # Spot Key
 
-A floating pie-chart widget for Windows that triggers keyboard shortcuts on hover.
+A small floating pie-chart overlay for Windows that triggers keyboard shortcuts when you hover over a slice.
 
-![Spot Key floating over the desktop](screenshot.png)
+<p align="center">
+  <img src="screenshot.png" alt="Spot Key floating over VS Code" width="280">
+</p>
 
-Each slice of the pie represents a different keyboard shortcut. Hover over a slice for 330ms to trigger it — the slice highlights at the exact moment the keystroke fires, giving clear visual confirmation.
+Each slice represents a shortcut. Hover for 330ms and it fires — the slice lights up at the exact moment the keystroke goes through, so you always know it worked.
 
-## Features
-
-- **Pie-chart overlay** — configurable shortcuts, one per slice, with distinct colors
-- **Hover to trigger** — deliberate 330ms dwell time prevents accidental activation
-- **Action sequences** — each shortcut can fire a single key combo or chain together multiple key presses, mouse clicks, and timed delays
-- **Smooth rendering** — Pillow supersampling with Win32 layered windows for true per-pixel alpha transparency (no edge fringe on any background)
-- **Always on top** — stays visible over all windows, automatically re-asserts topmost status
-- **Draggable** — grab the menu button (top-left) to reposition
-- **Resizable** — adjust the pie diameter from the Settings dialog (40–600 px)
-- **Persistent** — remembers window position, size, and shortcuts between sessions
-- **System tray** — minimize to tray, restore with a click
-- **DPI aware** — crisp at any display scaling
+Shortcuts aren't limited to single key combos. Each slice can run a **sequence of actions**: multiple key presses, timed delays, and mouse clicks chained together. For example, type a word, wait half a second, then click a button.
 
 ## Install
 
-### Option A: Download the installer (recommended for most users)
+### Download the installer
 
-Go to the [Releases](https://github.com/reasonmethis/spot-key/releases) page and download `SpotKeySetup-x.x.x.exe`. Run it — no Python needed.
+Go to [Releases](https://github.com/reasonmethis/spot-key/releases) and grab `SpotKeySetup-x.x.x.exe`. Run it — no Python needed. The installer adds a Start Menu shortcut and can optionally launch Spot Key on Windows startup.
 
-The installer adds a Start Menu shortcut and optionally launches Spot Key on Windows startup.
+### Run from source
 
-### Option B: Run from source (developers)
-
-Requires [Python 3.12+](https://www.python.org/) and [uv](https://docs.astral.sh/uv/).
+If you'd rather inspect everything first:
 
 ```
 git clone https://github.com/reasonmethis/spot-key.git
@@ -37,32 +26,19 @@ cd spot-key
 uv run python -m spot_key
 ```
 
-You can also install it as a standalone command (still needs Python):
+Requires [Python 3.12+](https://www.python.org/) and [uv](https://docs.astral.sh/uv/). You can also install it as a command with `uv tool install git+https://github.com/reasonmethis/spot-key.git`, then just run `spot-key`.
 
-```
-uv tool install git+https://github.com/reasonmethis/spot-key.git
-spot-key
-```
+## How it works
 
-## Default shortcuts
-
-| Slice | Color | Action |
-|-------|-------|--------|
-| Top | Blue | Types "hey" (three key presses in sequence) |
-| Bottom | Green | Alt+Tab |
-
-Each shortcut can be a single key combo or a **sequence of actions** — multiple key combos, timed delays, and mouse clicks chained together. For example, you could set up a shortcut that types a word, waits 500ms, then clicks a specific screen position.
-
-Shortcuts can be customised via the Settings dialog (hamburger menu → Settings).
-
-## Controls
-
-- **Hover a slice** — triggers the shortcut after 330ms
-- **Menu button** (top-left hamburger icon) — click to open menu, drag to reposition
+- **Hover a slice** to trigger its shortcut (330ms dwell time prevents accidental activation)
+- **Click the hamburger icon** (top-left) to open the menu, or **drag it** to reposition the pie
+- **Settings** lets you add, remove, and reorder shortcuts, pick colors, and resize the pie (40-600 px)
+- **System tray** — hide the pie to the tray and bring it back with a click
+- Everything persists between sessions: window position, size, and all your shortcuts
 
 ## Building the installer
 
-To build the installer locally (Windows only):
+To build locally (Windows only):
 
 ```
 uv pip install nuitka
@@ -70,15 +46,7 @@ winget install JRSoftware.InnoSetup
 uv run python build_installer.py
 ```
 
-This compiles the app to a native executable with [Nuitka](https://nuitka.net/), then wraps it in a single-file installer with [Inno Setup](https://jrsoftware.org/isinfo.php). Output: `Output/SpotKeySetup-x.x.x.exe`.
-
-Releases are also built automatically via GitHub Actions when a version tag (`v*`) is pushed.
-
-## Running tests
-
-```
-uv run pytest -v
-```
+This compiles to a native executable with [Nuitka](https://nuitka.net/), then packages it into a single-file installer with [Inno Setup](https://jrsoftware.org/isinfo.php). Releases are also built automatically via GitHub Actions on version tags.
 
 ## License
 
